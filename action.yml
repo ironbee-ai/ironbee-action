@@ -1,5 +1,5 @@
 name: 'IronBee Action'
-description: 'Verify and fix code changes using IronBee CLI + Claude Code with browser-based verification'
+description: 'Verify and fix code changes using IronBee CLI + Claude Code with browser agent'
 author: 'IronBee'
 
 branding:
@@ -17,8 +17,12 @@ inputs:
     description: 'GitHub token for PR operations'
     required: false
     default: ${{ github.token }}
-  version:
+  ironbee_cli_version:
     description: 'IronBee CLI version to install (e.g., "0.4.1", "latest")'
+    required: false
+    default: 'latest'
+  claude_code_cli_version:
+    description: 'Claude Code CLI version to install (e.g., "1.0.0", "latest")'
     required: false
     default: 'latest'
   app_install_command:
@@ -99,16 +103,16 @@ runs:
     - name: Install IronBee CLI
       shell: bash
       run: |
-        if [ "${{ inputs.version }}" = "latest" ]; then
+        if [ "${{ inputs.ironbee_cli_version }}" = "latest" ]; then
           npm install -g @ironbee-ai/cli
         else
-          npm install -g @ironbee-ai/cli@${{ inputs.version }}
+          npm install -g @ironbee-ai/cli@${{ inputs.ironbee_cli_version }}
         fi
         echo "ironbee-version=$(ironbee --version)" >> "$GITHUB_OUTPUT"
         echo "ironbee-path=$(which ironbee)" >> "$GITHUB_OUTPUT"
       id: install-cli
 
-    - name: Configure IronBee (recording + MCP logging)
+    - name: Configure IronBee
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
@@ -225,7 +229,7 @@ runs:
         ## Task
         1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`
            IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target.
-        2. Run /ironbee-verify to perform browser-based verification
+        2. Run /ironbee-verify to perform verification
         3. If verification fails, fix the issues and re-verify
         4. Commit any fixes
         PROMPT_COMMAND
@@ -251,35 +255,25 @@ runs:
         git config user.name "github-actions[bot]"
         git config user.email "github-actions[bot]@users.noreply.github.com"
 
-    # ── Run Claude Code with IronBee ───────────────────────────────────
-    # Use claude-code-action for PR events (handles PR context, comments, commits)
-    - name: Run Claude Code verification (PR)
-      id: claude-verify-pr
-      if: github.event_name == 'pull_request'
-      uses: anthropics/claude-code-action@v1
-      with:
-        anthropic_api_key: ${{ inputs.anthropic_api_key }}
-        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
-        prompt: ${{ steps.build-prompt.outputs.prompt }}
-        claude_args: >-
-          --max-turns ${{ inputs.max_turns }}
-          --dangerously-skip-permissions
-          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
-          ${{ inputs.claude_args }}
-        show_full_output: 'true'
+    # ── Install Claude Code CLI ─────────────────────────────────────
+    - name: Install Claude Code CLI
+      shell: bash
+      run: |
+        if [ "${{ inputs.claude_code_cli_version }}" = "latest" ]; then
+          npm install -g @anthropic-ai/claude-code
+        else
+          npm install -g @anthropic-ai/claude-code@${{ inputs.claude_code_cli_version }}
+        fi
 
-    # Use Claude Code CLI directly for push events (claude-code-action doesn't support push)
-    - name: Run Claude Code verification (push)
-      id: claude-verify-push
-      if: github.event_name == 'push'
+    # ── Run Claude Code with IronBee ───────────────────────────────────
+    - name: Run Claude Code verification
+      id: claude-verify
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
       run: |
-        # Install Claude Code CLI
-        npm install -g @anthropic-ai/claude-code
-
         # Write prompt to file and pipe to claude
         PROMPT_FILE=$(mktemp)
         cat > "$PROMPT_FILE" << 'PROMPT_END'
@@ -294,7 +288,7 @@ runs:
           --dangerously-skip-permissions \
           ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }} \
           ${{ inputs.claude_args }} \
-          2>&1 | tee "$LOG_FILE.raw" | VERBOSE="${{ inputs.verbose }}" jq -r --unbuffered --arg verbose "$VERBOSE" '
+          2>&1 | tee "$LOG_FILE.raw" | jq -r --unbuffered --arg verbose "${{ inputs.verbose }}" '
             if .type == "assistant" and .message.content then
               (.message.content[] |
                 if .type == "text" then "🤖 " + .text
