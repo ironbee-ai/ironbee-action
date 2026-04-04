@@ -154,6 +154,8 @@ runs:
       id: build-prompt
       shell: bash
       working-directory: ${{ inputs.working_directory }}
+      env:
+        USER_PROMPT: ${{ inputs.prompt }}
       run: |
         ARTIFACTS_DIR="${{ github.workspace }}/${{ inputs.working_directory }}/.ironbee/artifacts"
 
@@ -216,8 +218,9 @@ runs:
         PROMPT_EVIDENCE
 
         # Append user's custom prompt
-        if [ -n "${{ inputs.prompt }}" ]; then
-          printf "\n## Additional Instructions\n${{ inputs.prompt }}\n" >> /tmp/ironbee-prompt.md
+        if [ -n "$USER_PROMPT" ]; then
+          printf "\n## Additional Instructions\n" >> /tmp/ironbee-prompt.md
+          printf "%s\n" "$USER_PROMPT" >> /tmp/ironbee-prompt.md
         fi
 
         # Core instruction: run the IronBee verify command
