@@ -143,12 +143,11 @@ runs:
       shell: bash
       env:
         PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 'true'
-        BROWSER_DEVTOOLS_INSTALL_CHROMIUM: 'true'
       run: npm install -g browser-devtools-mcp
 
-    - name: Install Playwright system dependencies
+    - name: Install Chromium and system dependencies
       shell: bash
-      run: npx -y playwright install-deps chromium
+      run: npx -y playwright install --with-deps chromium
 
     # ── Build Verification Prompt ──────────────────────────────────────
     - name: Build verification prompt
