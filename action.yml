@@ -138,15 +138,20 @@ runs:
 
         ironbee install --client claude
 
-    # ── Browser Setup (browser-devtools-mcp installs Playwright + Chromium + ffmpeg) ──
+    # ── Browser Setup ────────────────────────────────────────────────
     - name: Install browser-devtools-mcp
       shell: bash
       env:
         PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 'true'
-        BROWSER_DEVTOOLS_INSTALL_CHROMIUM: 'true'
       run: npm install -g browser-devtools-mcp
 
-    - name: Install Playwright system dependencies
+    - name: Install Chromium (cache miss)
+      if: steps.playwright-cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: npx -y playwright install --with-deps chromium
+
+    - name: Install Playwright system dependencies (cache hit)
+      if: steps.playwright-cache.outputs.cache-hit == 'true'
       shell: bash
       run: npx -y playwright install-deps chromium
 
