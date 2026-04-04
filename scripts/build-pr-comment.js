@@ -57,9 +57,7 @@ function main() {
   console.log(lines.join('\n'));
 }
 
-/**
- * Parse all verdicts from actions.jsonl files in session directories.
- */
+// Parse all verdicts from actions.jsonl files in session directories.
 function parseVerdicts(artifactsDir) {
   const sessionsDir = path.join(artifactsDir, 'sessions');
   const verdicts = [];
@@ -74,7 +72,8 @@ function parseVerdicts(artifactsDir) {
     for (const line of lines) {
       try {
         const event = JSON.parse(line);
-        if (event.type === 'verdict' && event.verdict) {
+        // IronBee uses "verdict_write" as the event type
+        if (event.type === 'verdict_write' && event.verdict) {
           verdicts.push(event.verdict);
         }
       } catch {
@@ -86,9 +85,7 @@ function parseVerdicts(artifactsDir) {
   return verdicts;
 }
 
-/**
- * Parse cycle directories for evidence files.
- */
+// Parse cycle directories for evidence files.
 function parseCycles(artifactsDir) {
   const cycles = [];
 
@@ -115,9 +112,7 @@ function parseCycles(artifactsDir) {
   return cycles;
 }
 
-/**
- * List file names in a directory.
- */
+// List file names in a directory.
 function listFiles(dir) {
   if (!fs.existsSync(dir)) return [];
   return fs.readdirSync(dir).filter(f => {
@@ -126,10 +121,8 @@ function listFiles(dir) {
   });
 }
 
-/**
- * Match verdicts (from actions.jsonl) with cycle directories.
- * Verdicts are in order — cycle 1 gets verdict 1, etc.
- */
+// Match verdicts (from actions.jsonl) with cycle directories.
+// Verdicts are in order — cycle 1 gets verdict 1, etc.
 function matchVerdictsWithCycles(verdicts, cycles) {
   return cycles.map((cycle, i) => ({
     ...cycle,
@@ -137,18 +130,14 @@ function matchVerdictsWithCycles(verdicts, cycles) {
   }));
 }
 
-/**
- * Determine the final verdict status.
- */
+// Determine the final verdict status.
 function getFinalVerdict(matched) {
   if (matched.length === 0) return 'unknown';
   const last = matched[matched.length - 1];
   return last.details?.status || last.verdict || 'unknown';
 }
 
-/**
- * Format the top-level badge line.
- */
+// Format the top-level badge line.
 function formatBadge(verdict, cycleCount) {
   const icon = verdict === 'pass' ? '\u2705' : verdict === 'fail' ? '\u274C' : '\u26A0\uFE0F';
   const label = verdict.toUpperCase();
@@ -156,14 +145,13 @@ function formatBadge(verdict, cycleCount) {
   return `${icon} **${label}**${suffix}`;
 }
 
-/**
- * Format a single verification cycle as markdown.
- */
+// Format a single verification cycle as markdown.
+// Uses "Cycle 1" instead of "Cycle #1" to avoid GitHub auto-linking to issues.
 function formatCycle(cycle) {
   const lines = [];
   const icon = cycle.verdict === 'pass' ? '\u2705' : cycle.verdict === 'fail' ? '\u274C' : '\u26A0\uFE0F';
 
-  lines.push(`### Cycle #${cycle.num} \u2014 ${icon} ${cycle.verdict}`);
+  lines.push(`### Cycle ${cycle.num} \u2014 ${icon} ${cycle.verdict}`);
   lines.push('');
 
   const d = cycle.details;

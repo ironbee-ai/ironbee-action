@@ -238,6 +238,14 @@ runs:
           echo "PROMPT_DELIM"
         } >> "$GITHUB_OUTPUT"
 
+    # ── Configure git identity ────────────────────────────────────────
+    - name: Configure git identity
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
     # ── Run Claude Code with IronBee ───────────────────────────────────
     # Use claude-code-action for PR events (handles PR context, comments, commits)
     - name: Run Claude Code verification (PR)
@@ -418,9 +426,6 @@ runs:
 
         SHORT_SHA=$(echo "$ORIGINAL_SHA" | cut -c1-7)
         BRANCH="ironbee/fix-${SHORT_SHA}-$(date +%s)"
-
-        git config user.name "github-actions[bot]"
-        git config user.email "github-actions[bot]@users.noreply.github.com"
 
         # Commit any uncommitted changes left by Claude Code
         git add -A
