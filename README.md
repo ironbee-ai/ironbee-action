@@ -41,13 +41,63 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
+## Trigger Modes
+
+The action adapts its behavior based on the trigger event:
+
+| Trigger | Verification Mode | Fix Behavior |
+|---------|-------------------|-------------|
+| `pull_request` | Diff-based — verifies changed pages | Commits fixes to PR branch, posts verification report comment |
+| `push` (main/master) | Diff-based — verifies changed pages | Creates fix PR automatically if issues found |
+| `workflow_dispatch` | Full — verifies entire application | Creates fix PR automatically if issues found |
+| `schedule` | Full — verifies entire application | Creates fix PR automatically if issues found |
+
+### PR Verification
+
+```yaml
+on:
+  pull_request:
+    types: [opened, synchronize]
+```
+
+Reviews the PR diff, verifies affected pages, and posts a verification report comment. Fixes are committed directly to the PR branch.
+
+### Push to Main
+
+```yaml
+on:
+  push:
+    branches: [main]
+```
+
+Reviews the pushed commit diff and verifies affected pages. If issues are found, creates a new branch with fixes and opens a PR.
+
+### Scheduled Smoke Test
+
+```yaml
+on:
+  schedule:
+    - cron: '0 9 * * 1'  # Every Monday at 09:00 UTC
+```
+
+Runs a full application verification on a schedule. No diff — tests the entire application. Creates a fix PR if issues are found.
+
+### Manual Verification
+
+```yaml
+on:
+  workflow_dispatch:
+```
+
+Trigger a full verification manually from the GitHub Actions UI. Creates a fix PR if issues are found.
+
 ## Permissions
 
 The action requires these GitHub token permissions:
 
 | Permission | Required | Purpose |
 |------------|----------|---------|
-| `contents: write` | Yes | Commit fixes to PR branches, create fix branches for push events |
+| `contents: write` | Yes | Commit fixes to PR branches, create fix branches |
 | `pull-requests: write` | Yes | Post verification report comments on PRs, create fix PRs |
 | `issues: write` | Yes | Update PR comments via GitHub API |
 
@@ -138,8 +188,8 @@ By default, IronBee config files are committed to the repo so they can be used i
 
 1. **Setup** — Installs IronBee CLI, Claude Code CLI, and Playwright Chromium (cached across runs)
 2. **Configure** — Runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config
-3. **Verify** — Claude Code runs `/ironbee-verify` which:
-   - Reviews the code diff
+3. **Verify** — Claude Code runs `/ironbee-verify` (or `/ironbee-verify full` for manual/scheduled) which:
+   - Reviews the code diff (push/PR) or tests the full app (manual/scheduled)
    - Builds and starts the application
    - Records browser sessions and takes screenshots
    - Tests functionality and checks for errors
@@ -150,7 +200,7 @@ By default, IronBee config files are committed to the repo so they can be used i
 ### Fix Behavior
 
 - **PR trigger** — Fixes are committed directly to the PR branch
-- **Push to main** — If verification fails, a fix PR is created automatically
+- **Push / Manual / Scheduled** — If issues are found, a fix PR is created automatically
 
 ### Evidence Collection
 
@@ -158,12 +208,12 @@ Screenshots and recordings are organized by verification cycle:
 
 ```
 .ironbee/artifacts/
-  cycle-1-fail/
-    screenshots/homepage-missing-button.png
-    recordings/form-validation.webm
-  cycle-2-pass/
-    screenshots/homepage-fixed.png
-    recordings/form-validation-fixed.webm
+  cycle-1/
+    screenshots/homepage-before-fix.png
+    recordings/verification.webm
+  cycle-2/
+    screenshots/homepage-after-fix.png
+    recordings/verification.webm
 ```
 
 Evidence is uploaded as GitHub Actions artifacts (30-day retention) and linked in the PR comment.

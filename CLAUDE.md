@@ -4,7 +4,7 @@ GitHub Action for IronBee CLI — Verify and fix code changes using browser-base
 
 ## Project Overview
 
-This is a **composite GitHub Action** that orchestrates [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) and [Claude Code CLI](https://github.com/anthropics/claude-code) to automatically verify code changes in a browser and fix issues found. It runs on push to main, PR creation, and PR updates.
+This is a **composite GitHub Action** that orchestrates [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) and [Claude Code CLI](https://github.com/anthropics/claude-code) to automatically verify code changes in a browser and fix issues found. Supports push, PR, manual (`workflow_dispatch`), and scheduled (`schedule`) triggers.
 
 ## How It Works
 
@@ -12,11 +12,13 @@ This is a **composite GitHub Action** that orchestrates [IronBee CLI](https://gi
 2. Runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config
 3. Sets up Playwright Chromium with GitHub Actions cache
 4. Enables recording enforcement so the agent must record browser sessions
-5. Builds a context-aware verification prompt (PR vs push)
+5. Builds a context-aware verification prompt:
+   - **push/PR**: diff-based verification with `/ironbee-verify`
+   - **manual/scheduled**: full application verification with `/ironbee-verify full`
 6. Runs Claude Code CLI with IronBee hooks + browser-devtools MCP
 7. Collects evidence (screenshots, recordings, verdicts) and uploads as artifacts
 8. Posts a verification report comment on PRs
-9. On push-to-main failures, creates a fix PR automatically
+9. On non-PR events (push, manual, scheduled), creates a fix PR if issues are found
 
 ## Architecture
 
@@ -60,7 +62,8 @@ LICENSE                   # MIT
 - PR comments are created/updated (not duplicated) using GitHub API
 - Evidence uploaded via `actions/upload-artifact@v4` with 30-day retention
 - User prompt passed via env var to prevent shell command substitution
-- Heredoc content is not indented to keep prompt text clean
+- No heredocs in action.yml — all content written via echo/printf to avoid YAML parsing issues
+- Trigger-aware: adapts prompt and fix behavior based on event type
 
 ## Related Projects
 
