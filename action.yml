@@ -256,7 +256,7 @@ runs:
           echo "3. If verification fails, fix the issues and re-verify" >> "$PROMPT"
           echo "4. Commit any fixes" >> "$PROMPT"
         else
-          echo "1. Run /ironbee-verify to verify the application is working correctly" >> "$PROMPT"
+          echo "1. Run /ironbee-verify full to verify the application is working correctly" >> "$PROMPT"
           echo "2. If verification fails, fix the issues and re-verify" >> "$PROMPT"
           echo "3. Commit any fixes" >> "$PROMPT"
         fi
