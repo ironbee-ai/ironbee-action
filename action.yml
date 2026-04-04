@@ -409,57 +409,42 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
         ORIGINAL_SHA="${{ github.sha }}"
-        CURRENT_SHA=$(git rev-parse HEAD)
-        HAS_NEW_COMMITS=false
-        HAS_UNCOMMITTED=false
 
-        # Check if Claude Code made new commits during verification
-        if [ "$ORIGINAL_SHA" != "$CURRENT_SHA" ]; then
-          HAS_NEW_COMMITS=true
+        # Check if Claude Code made any commits (committed or uncommitted changes)
+        if [ "$ORIGINAL_SHA" = "$(git rev-parse HEAD)" ] && [ -z "$(git status --porcelain)" ]; then
+          echo "No changes detected — verification passed or issues require manual review"
+          exit 0
         fi
 
-        # Check for uncommitted changes (stage real code changes only)
+        SHORT_SHA=$(echo "$ORIGINAL_SHA" | cut -c1-7)
+        BRANCH="ironbee/fix-${SHORT_SHA}-$(date +%s)"
+
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+        # Commit any uncommitted changes left by Claude Code
         git add -A
         git reset HEAD -- .mcp.json .gitignore .claude/ .ironbee/ 2>/dev/null || true
         if [ -n "$(git diff --cached --name-only)" ]; then
-          HAS_UNCOMMITTED=true
+          git commit -m "fix: apply IronBee verification fixes for ${SHORT_SHA}"
         fi
 
-        if [ "$HAS_NEW_COMMITS" = true ] || [ "$HAS_UNCOMMITTED" = true ]; then
-          SHORT_SHA=$(echo "$ORIGINAL_SHA" | cut -c1-7)
-          BRANCH="ironbee/fix-${SHORT_SHA}-$(date +%s)"
-          ARTIFACTS_DIR=".ironbee/artifacts"
-          IRONBEE_VERSION="${{ steps.install-cli.outputs.ironbee-version }}"
-          ARTIFACT_URL="${{ steps.upload-artifacts.outputs.artifact-url }}"
+        # Move all fix commits to a new branch, reset main to original
+        git branch "$BRANCH"
+        git reset --hard "$ORIGINAL_SHA"
+        git push origin "$BRANCH"
 
-          # Build PR body via script
-          BODY_FILE=$(mktemp)
-          node "${{ github.action_path }}/scripts/build-pr-comment.js" \
-            "$ARTIFACTS_DIR" "$IRONBEE_VERSION" "$ARTIFACT_URL" > "$BODY_FILE"
+        # Build PR body
+        BODY_FILE=$(mktemp)
+        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
+          ".ironbee/artifacts" \
+          "${{ steps.install-cli.outputs.ironbee-version }}" \
+          "${{ steps.upload-artifacts.outputs.artifact-url }}" > "$BODY_FILE"
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+        gh pr create \
+          --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
+          --body-file "$BODY_FILE" \
+          --base "${{ github.ref_name }}" \
+          --head "$BRANCH"
 
-          # Commit any remaining uncommitted changes
-          if [ "$HAS_UNCOMMITTED" = true ]; then
-            git commit -m "fix: apply IronBee verification fixes for ${SHORT_SHA}"
-          fi
-
-          # Create branch from current state (includes Claude Code's commits + any new commit)
-          git checkout -b "$BRANCH"
-          git push origin "$BRANCH"
-
-          # Reset main back to original SHA so we don't push fixes directly to main
-          git checkout "${{ github.ref_name }}"
-          git reset --hard "$ORIGINAL_SHA"
-
-          gh pr create \
-            --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
-            --body-file "$BODY_FILE" \
-            --base "${{ github.ref_name }}" \
-            --head "$BRANCH"
-
-          rm -f "$BODY_FILE"
-        else
-          echo "No code changes detected — verification issues may require manual review"
-        fi
+        rm -f "$BODY_FILE"
