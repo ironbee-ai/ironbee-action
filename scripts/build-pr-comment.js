@@ -86,30 +86,35 @@ function parseVerdicts(artifactsDir) {
 }
 
 // Parse cycle directories for evidence files.
-// Directory name format: cycle-<N>-* (any suffix, verdict comes from actions.jsonl)
+// Directories with the same cycle number (e.g. cycle-1-fail, cycle-1-pass) are
+// merged — their screenshots and recordings are combined into one cycle.
 function parseCycles(artifactsDir) {
-  const cycles = [];
-
-  if (!fs.existsSync(artifactsDir)) return cycles;
+  if (!fs.existsSync(artifactsDir)) return [];
 
   const dirs = fs.readdirSync(artifactsDir)
     .filter(d => d.startsWith('cycle-') && fs.statSync(path.join(artifactsDir, d)).isDirectory())
     .sort();
 
+  const byNum = new Map();
   for (const dir of dirs) {
     const match = dir.match(/^cycle-(\d+)/);
     if (!match) continue;
 
     const num = parseInt(match[1], 10);
     const cycleDir = path.join(artifactsDir, dir);
-
     const screenshots = listFiles(path.join(cycleDir, 'screenshots'));
     const recordings = listFiles(path.join(cycleDir, 'recordings'));
 
-    cycles.push({ num, screenshots, recordings });
+    if (byNum.has(num)) {
+      const existing = byNum.get(num);
+      existing.screenshots.push(...screenshots);
+      existing.recordings.push(...recordings);
+    } else {
+      byNum.set(num, { num, screenshots, recordings });
+    }
   }
 
-  return cycles;
+  return Array.from(byNum.values()).sort((a, b) => a.num - b.num);
 }
 
 // List file names in a directory.
