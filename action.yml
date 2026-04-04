@@ -147,7 +147,6 @@ runs:
       run: npm install -g browser-devtools-mcp
 
     - name: Install Playwright system dependencies
-      if: steps.playwright-cache.outputs.cache-hit == 'true'
       shell: bash
       run: npx -y playwright install-deps chromium
 
