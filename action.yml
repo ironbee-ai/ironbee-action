@@ -169,27 +169,39 @@ runs:
       run: |
         ARTIFACTS_DIR="$(pwd)/.ironbee/artifacts"
 
-        # Determine trigger context
+        # Determine trigger context and diff target
+        DIFF_TARGET=""
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           CONTEXT="Pull Request #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
           DIFF_TARGET="origin/${{ github.event.pull_request.base.ref }}"
-        else
+        elif [ "${{ github.event_name }}" = "push" ]; then
           CONTEXT="Push to ${{ github.ref_name }} (commit ${{ github.sha }})"
-          # Use HEAD~1 if parent exists, otherwise diff against empty tree
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
             DIFF_TARGET="HEAD~1"
           else
             DIFF_TARGET="$(git hash-object -t tree /dev/null)"
           fi
+        elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          CONTEXT="Manual run on ${{ github.ref_name }}"
+        elif [ "${{ github.event_name }}" = "schedule" ]; then
+          CONTEXT="Scheduled run on ${{ github.ref_name }}"
+        else
+          CONTEXT="${{ github.event_name }} on ${{ github.ref_name }}"
         fi
 
         # Build the prompt
         PROMPT=/tmp/ironbee-prompt.md
-        echo "You are running in CI. Verify the code changes and fix any issues found." > "$PROMPT"
+        if [ -n "$DIFF_TARGET" ]; then
+          echo "You are running in CI. Verify the code changes and fix any issues found." > "$PROMPT"
+        else
+          echo "You are running in CI. Verify that the application is working correctly." > "$PROMPT"
+        fi
         echo "" >> "$PROMPT"
         echo "## Context" >> "$PROMPT"
         echo "${CONTEXT}" >> "$PROMPT"
-        echo "Diff target: ${DIFF_TARGET}" >> "$PROMPT"
+        if [ -n "$DIFF_TARGET" ]; then
+          echo "Diff target: ${DIFF_TARGET}" >> "$PROMPT"
+        fi
 
         # App configuration
         if [ -n "${{ inputs.app_install_command }}" ] || [ -n "${{ inputs.app_build_command }}" ] || [ -n "${{ inputs.app_start_command }}" ] || [ -n "${{ inputs.app_url }}" ]; then
@@ -237,11 +249,17 @@ runs:
         # Core instruction: run the IronBee verify command
         echo "" >> "$PROMPT"
         echo "## Task" >> "$PROMPT"
-        echo "1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`" >> "$PROMPT"
-        echo "   IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target." >> "$PROMPT"
-        echo "2. Run /ironbee-verify to perform verification" >> "$PROMPT"
-        echo "3. If verification fails, fix the issues and re-verify" >> "$PROMPT"
-        echo "4. Commit any fixes" >> "$PROMPT"
+        if [ -n "$DIFF_TARGET" ]; then
+          echo "1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`" >> "$PROMPT"
+          echo "   IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target." >> "$PROMPT"
+          echo "2. Run /ironbee-verify to perform verification" >> "$PROMPT"
+          echo "3. If verification fails, fix the issues and re-verify" >> "$PROMPT"
+          echo "4. Commit any fixes" >> "$PROMPT"
+        else
+          echo "1. Run /ironbee-verify to verify the application is working correctly" >> "$PROMPT"
+          echo "2. If verification fails, fix the issues and re-verify" >> "$PROMPT"
+          echo "3. Commit any fixes" >> "$PROMPT"
+        fi
 
         # Output the prompt (multiline)
         {
@@ -421,12 +439,11 @@ runs:
 
         rm -f "$BODY_FILE"
 
-    # ── Fix PR for push-to-main ────────────────────────────────────────
-    - name: Create fix PR for main branch
+    # ── Fix PR for non-PR events ──────────────────────────────────────
+    - name: Create fix PR
       if: >-
         always() &&
-        github.event_name == 'push' &&
-        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+        github.event_name != 'pull_request'
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
