@@ -57,6 +57,10 @@ inputs:
     description: 'Additional Claude Code CLI arguments'
     required: false
     default: ''
+  exclude_ironbee_files:
+    description: 'Exclude IronBee config files from commits (set true to prevent .ironbee/, .claude/, .mcp.json from being committed)'
+    required: false
+    default: 'false'
   verbose:
     description: 'Enable verbose logging (tool responses, prompt, artifact list, verdict details)'
     required: false
@@ -126,8 +130,8 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
-        # Exclude IronBee-generated files from git so they don't end up in commits/PRs
-        cat >> .git/info/exclude << 'EOF'
+        if [ "${{ inputs.exclude_ironbee_files }}" = "true" ]; then
+          cat >> .git/info/exclude << 'EOF'
         .mcp.json
         .ironbee/
         .claude/settings.json
@@ -135,6 +139,7 @@ runs:
         .claude/rules/ironbee-*.md
         .claude/commands/ironbee-*.md
         EOF
+        fi
 
         ironbee install --client claude
 
@@ -310,7 +315,7 @@ runs:
 
     # ── Discard IronBee-generated file changes ───────────────────────
     - name: Discard IronBee config changes
-      if: always()
+      if: always() && inputs.exclude_ironbee_files == 'true'
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
@@ -437,7 +442,9 @@ runs:
 
         # Commit any uncommitted changes left by Claude Code
         git add -A
-        git reset HEAD -- .mcp.json .gitignore .claude/ .ironbee/ 2>/dev/null || true
+        if [ "${{ inputs.exclude_ironbee_files }}" = "true" ]; then
+          git reset HEAD -- .mcp.json .gitignore .claude/ .ironbee/ 2>/dev/null || true
+        fi
         if [ -n "$(git diff --cached --name-only)" ]; then
           git commit -m "fix: apply IronBee verification fixes for ${SHORT_SHA}"
         fi
