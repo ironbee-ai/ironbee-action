@@ -81,9 +81,9 @@ runs:
     - name: Fetch git history for diff
       shell: bash
       run: |
-        # Ensure we have enough history for git diff
-        git fetch --depth=50 origin 2>/dev/null || true
-        git fetch origin ${{ github.event.pull_request.base.ref || github.event.before || 'HEAD~1' }} --depth=50 2>/dev/null || true
+        # Unshallow so git diff / git log always work (even single-commit repos)
+        git fetch --unshallow origin 2>/dev/null || true
+        git fetch origin ${{ github.event.pull_request.base.ref || '' }} --depth=50 2>/dev/null || true
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
