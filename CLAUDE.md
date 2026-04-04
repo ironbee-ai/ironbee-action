@@ -1,0 +1,63 @@
+# IronBee Action
+
+GitHub Action for IronBee CLI — Verify and fix code changes using browser-based testing with Claude Code.
+
+## Project Overview
+
+This is a **composite GitHub Action** that orchestrates [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) and [Claude Code Action](https://github.com/anthropics/claude-code-action) to automatically verify code changes in a browser and fix issues found. It runs on push to main, PR creation, and PR updates.
+
+## How It Works
+
+1. Installs `@ironbee-ai/cli` globally and runs `ironbee install --client claude`
+2. Sets up Playwright Chromium with GitHub Actions cache (~200MB, cached across runs)
+3. Enables recording enforcement so the agent must record browser sessions
+4. Builds a context-aware verification prompt (PR vs push)
+5. Runs `anthropics/claude-code-action@v1` with IronBee hooks + browser-devtools MCP
+6. Collects evidence (screenshots, recordings, verdicts) and uploads as artifacts
+7. Posts a verification report comment on PRs
+8. On push-to-main failures, creates a fix PR automatically
+
+## Architecture
+
+This is a **composite action** (`runs: using: composite`) — not a JS action. It wraps `anthropics/claude-code-action@v1` and adds IronBee verification infrastructure around it. No TypeScript code, no build step — everything is shell scripts in `action.yml`.
+
+## Project Structure
+
+```
+action.yml                # Composite action definition (the entire action logic)
+.github/workflows/
+├── build.yml             # CI: validate action.yml
+└── release.yml           # Release: tag + GitHub Release
+CLAUDE.md                 # This file
+README.md                 # Usage documentation
+LICENSE                   # MIT
+```
+
+## Action Inputs
+
+**Auth (one required):** `anthropic_api_key`, `claude_code_oauth_token`
+**GitHub:** `github_token`
+**IronBee:** `version`
+**App:** `app_url`, `app_start_command`, `app_build_command`
+**Claude:** `prompt`, `model`, `max_turns`, `allowed_tools`, `claude_args`
+**Cloud:** `use_bedrock`, `use_vertex`
+**Other:** `working_directory`
+
+## Action Outputs
+
+- `verdict` — Verification result (`pass` / `fail` / `unknown`)
+- `artifacts_url` — Download URL for verification evidence
+
+## Key Conventions
+
+- No TypeScript, no npm dependencies — pure composite action with shell steps
+- Browser binaries cached at `~/.cache/ms-playwright` using `actions/cache`
+- IronBee hooks enforce verification flow (recording, screenshots, verdicts)
+- PR comments are created/updated (not duplicated) using GitHub API
+- Evidence uploaded via `actions/upload-artifact@v4` with 30-day retention
+
+## Related Projects
+
+- **ironbee-cli** (`@ironbee-ai/cli`): The CLI tool this action uses for verification hooks
+- **claude-code-action** (`anthropics/claude-code-action`): Official Claude Code GitHub Action
+- **browser-devtools-mcp**: MCP server for browser automation via Playwright

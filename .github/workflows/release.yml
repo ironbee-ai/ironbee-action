@@ -1,0 +1,53 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate action.yml
+        run: |
+          python3 -c "
+          import yaml
+          with open('action.yml') as f:
+              data = yaml.safe_load(f)
+          assert data['runs']['using'] == 'composite'
+          print('action.yml is valid')
+          "
+
+      - name: Create and push tags
+        run: |
+          VERSION="${{ inputs.version }}"
+          MAJOR=$(echo "$VERSION" | sed 's/^v//' | cut -d. -f1)
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Create version tag
+          git tag -fa "${VERSION}" -m "Release ${VERSION}"
+          git push origin "${VERSION}" --force
+
+          # Update major version tag (e.g., v1)
+          git tag -fa "v${MAJOR}" -m "Update v${MAJOR} tag"
+          git push origin "v${MAJOR}" --force
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create ${{ inputs.version }} \
+            --title "${{ inputs.version }}" \
+            --generate-notes

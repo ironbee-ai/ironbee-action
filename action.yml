@@ -1,0 +1,441 @@
+name: 'IronBee Action'
+description: 'Verify and fix code changes using IronBee CLI + Claude Code with browser-based verification'
+author: 'IronBee'
+
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+inputs:
+  anthropic_api_key:
+    description: 'Anthropic API key for Claude Code'
+    required: false
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token (alternative to API key)'
+    required: false
+  github_token:
+    description: 'GitHub token for PR operations'
+    required: false
+    default: ${{ github.token }}
+  version:
+    description: 'IronBee CLI version to install (e.g., "0.4.1", "latest")'
+    required: false
+    default: 'latest'
+  app_url:
+    description: 'Application URL for browser verification (e.g., "http://localhost:3000")'
+    required: false
+    default: ''
+  app_start_command:
+    description: 'Command to start the application (e.g., "npm run dev")'
+    required: false
+    default: ''
+  app_install_command:
+    description: 'Command to install application dependencies (e.g., "npm ci")'
+    required: false
+    default: ''
+  app_build_command:
+    description: 'Command to build the application before verification (e.g., "npm run build")'
+    required: false
+    default: ''
+  prompt:
+    description: 'Additional instructions for the verification agent'
+    required: false
+    default: ''
+  model:
+    description: 'Claude model to use (e.g., "claude-sonnet-4-5-20250514")'
+    required: false
+    default: ''
+  max_turns:
+    description: 'Maximum conversation turns for Claude Code'
+    required: false
+    default: '100'
+  claude_args:
+    description: 'Additional Claude Code CLI arguments'
+    required: false
+    default: ''
+  use_bedrock:
+    description: 'Use Amazon Bedrock for Claude API'
+    required: false
+    default: 'false'
+  use_vertex:
+    description: 'Use Google Vertex AI for Claude API'
+    required: false
+    default: 'false'
+  working_directory:
+    description: 'Working directory for verification'
+    required: false
+    default: '.'
+
+outputs:
+  verdict:
+    description: 'Verification verdict (pass/fail)'
+    value: ${{ steps.verdict.outputs.status }}
+  artifacts_url:
+    description: 'URL to download verification artifacts'
+    value: ${{ steps.upload-artifacts.outputs.artifact-url }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ── Setup ──────────────────────────────────────────────────────────
+    - name: Fetch git history for diff
+      shell: bash
+      run: |
+        # Ensure we have enough history for git diff
+        git fetch --depth=50 origin 2>/dev/null || true
+        git fetch origin ${{ github.event.pull_request.base.ref || github.event.before || 'HEAD~1' }} --depth=50 2>/dev/null || true
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Restore Playwright browser cache
+      id: playwright-cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-chromium-${{ runner.os }}
+        restore-keys: playwright-chromium-${{ runner.os }}
+        save-always: true
+
+    # ── Install IronBee CLI ────────────────────────────────────────────
+    - name: Install IronBee CLI
+      shell: bash
+      run: |
+        if [ "${{ inputs.version }}" = "latest" ]; then
+          npm install -g @ironbee-ai/cli
+        else
+          npm install -g @ironbee-ai/cli@${{ inputs.version }}
+        fi
+        echo "ironbee-version=$(ironbee --version)" >> "$GITHUB_OUTPUT"
+        echo "ironbee-path=$(which ironbee)" >> "$GITHUB_OUTPUT"
+      id: install-cli
+
+    - name: Configure IronBee (recording + MCP logging)
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        mkdir -p .ironbee/artifacts
+        MCP_LOG_FILE="${{ github.workspace }}/${{ inputs.working_directory }}/.ironbee/artifacts/browser-devtools-mcp.log"
+        cat > .ironbee/config.json << EOF
+        {"recording":{"enable":true},"browserDevTools":{"env":{"LOG_FILE":"${MCP_LOG_FILE}"}}}
+        EOF
+
+    - name: Setup IronBee for Claude
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        # Exclude IronBee-generated files from git so they don't end up in commits/PRs
+        cat >> .git/info/exclude << 'EOF'
+        .mcp.json
+        .ironbee/
+        .claude/settings.json
+        .claude/skills/ironbee-*.md
+        .claude/rules/ironbee-*.md
+        .claude/commands/ironbee-*.md
+        EOF
+
+        ironbee install --client claude
+
+    # ── Browser Setup (browser-devtools-mcp installs Playwright + Chromium + ffmpeg) ──
+    - name: Install browser-devtools-mcp
+      shell: bash
+      env:
+        BROWSER_DEVTOOLS_INSTALL_CHROMIUM: 'true'
+      run: npm install -g browser-devtools-mcp
+
+    - name: Install Playwright system dependencies
+      if: steps.playwright-cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: npx -y playwright install-deps chromium
+
+    # ── Build Verification Prompt ──────────────────────────────────────
+    - name: Build verification prompt
+      id: build-prompt
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        ARTIFACTS_DIR="${{ github.workspace }}/${{ inputs.working_directory }}/.ironbee/artifacts"
+
+        # Determine trigger context
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          CONTEXT="Pull Request #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
+          DIFF_TARGET="origin/${{ github.event.pull_request.base.ref }}"
+        else
+          CONTEXT="Push to ${{ github.ref_name }} (commit ${{ github.sha }})"
+          # Use HEAD~1 if parent exists, otherwise diff against empty tree
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            DIFF_TARGET="HEAD~1"
+          else
+            DIFF_TARGET="$(git hash-object -t tree /dev/null)"
+          fi
+        fi
+
+        # Build the prompt — delegate to /ironbee-verify which already knows the full workflow
+        cat > /tmp/ironbee-prompt.md << PROMPT_EOF
+        You are running in CI. Verify the code changes and fix any issues found.
+
+        ## Context
+        ${CONTEXT}
+        Diff target: ${DIFF_TARGET}
+        PROMPT_EOF
+
+        # App configuration
+        if [ -n "${{ inputs.app_install_command }}" ] || [ -n "${{ inputs.app_build_command }}" ] || [ -n "${{ inputs.app_start_command }}" ] || [ -n "${{ inputs.app_url }}" ]; then
+          echo "" >> /tmp/ironbee-prompt.md
+          echo "## Application" >> /tmp/ironbee-prompt.md
+          if [ -n "${{ inputs.app_install_command }}" ]; then
+            echo "- Install command: \`${{ inputs.app_install_command }}\`" >> /tmp/ironbee-prompt.md
+          fi
+          if [ -n "${{ inputs.app_build_command }}" ]; then
+            echo "- Build command: \`${{ inputs.app_build_command }}\`" >> /tmp/ironbee-prompt.md
+          fi
+          if [ -n "${{ inputs.app_start_command }}" ]; then
+            echo "- Start command: \`${{ inputs.app_start_command }}\`" >> /tmp/ironbee-prompt.md
+          fi
+          if [ -n "${{ inputs.app_url }}" ]; then
+            echo "- Application URL: ${{ inputs.app_url }}" >> /tmp/ironbee-prompt.md
+          fi
+        fi
+
+        cat >> /tmp/ironbee-prompt.md << PROMPT_EVIDENCE
+
+        ## Evidence
+        Organize artifacts by verification cycle under: ${ARTIFACTS_DIR}/
+        Directory structure per cycle:
+          ${ARTIFACTS_DIR}/cycle-<N>-<verdict>/screenshots/
+          ${ARTIFACTS_DIR}/cycle-<N>-<verdict>/recordings/
+        Examples:
+          cycle-1-fail/screenshots/homepage-missing-button.png
+          cycle-1-fail/recordings/form-validation.webm
+          cycle-2-pass/screenshots/homepage-fixed.png
+          cycle-2-pass/recordings/form-validation-fixed.webm
+        Create the cycle directory at the start of each verification cycle.
+        Name the directory with the final verdict after submitting (rename if needed).
+        Use descriptive file names that reflect what is being verified.
+        PROMPT_EVIDENCE
+
+        # Append user's custom prompt
+        if [ -n "${{ inputs.prompt }}" ]; then
+          printf "\n## Additional Instructions\n${{ inputs.prompt }}\n" >> /tmp/ironbee-prompt.md
+        fi
+
+        # Core instruction: run the IronBee verify command
+        cat >> /tmp/ironbee-prompt.md << 'PROMPT_COMMAND'
+
+        ## Task
+        1. Review the code changes with git diff
+        2. Run /ironbee-verify to perform browser-based verification
+        3. If verification fails, fix the issues and re-verify
+        4. Commit any fixes
+        PROMPT_COMMAND
+
+        # Output the prompt (multiline)
+        {
+          echo "prompt<<PROMPT_DELIM"
+          cat /tmp/ironbee-prompt.md
+          echo "PROMPT_DELIM"
+        } >> "$GITHUB_OUTPUT"
+
+    # ── Run Claude Code with IronBee ───────────────────────────────────
+    # Use claude-code-action for PR events (handles PR context, comments, commits)
+    - name: Run Claude Code verification (PR)
+      id: claude-verify-pr
+      if: github.event_name == 'pull_request'
+      uses: anthropics/claude-code-action@v1
+      with:
+        anthropic_api_key: ${{ inputs.anthropic_api_key }}
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: ${{ steps.build-prompt.outputs.prompt }}
+        claude_args: >-
+          --max-turns ${{ inputs.max_turns }}
+          --dangerously-skip-permissions
+          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
+          ${{ inputs.claude_args }}
+        use_bedrock: ${{ inputs.use_bedrock }}
+        use_vertex: ${{ inputs.use_vertex }}
+        show_full_output: 'true'
+
+    # Use Claude Code CLI directly for push events (claude-code-action doesn't support push)
+    - name: Run Claude Code verification (push)
+      id: claude-verify-push
+      if: github.event_name == 'push'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+      run: |
+        # Install Claude Code CLI
+        npm install -g @anthropic-ai/claude-code
+
+        # Write prompt to file and pipe to claude
+        PROMPT_FILE=$(mktemp)
+        cat > "$PROMPT_FILE" << 'PROMPT_END'
+        ${{ steps.build-prompt.outputs.prompt }}
+        PROMPT_END
+
+        # Run Claude Code with the verification prompt (stream output for live CI logs)
+        LOG_FILE="${{ github.workspace }}/${{ inputs.working_directory }}/.ironbee/artifacts/claude-output.log"
+
+        cat "$PROMPT_FILE" | claude --output-format stream-json --verbose \
+          --max-turns ${{ inputs.max_turns }} \
+          --dangerously-skip-permissions \
+          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }} \
+          ${{ inputs.claude_args }} \
+          2>&1 | tee "$LOG_FILE.raw" | jq -r --unbuffered '
+            if .type == "assistant" and .message.content then
+              (.message.content[] |
+                if .type == "text" then "🤖 " + .text
+                elif .type == "tool_use" then "🔧 " + .name + ": " + (.input | tostring | .[0:200])
+                else empty end)
+            elif .type == "user" and .message.content then
+              (.message.content[] |
+                if .type == "tool_result" then
+                  (if .is_error then "❌ Error: " + (.content | tostring | .[0:500])
+                   else "  ↳ " + (.content | tostring | .[0:500])
+                   end)
+                else empty end)
+            elif .type == "result" then
+              "✅ Done (cost: $" + (.total_cost_usd // 0 | tostring) + ", turns: " + (.num_turns // 0 | tostring) + ")"
+            else empty end
+          ' 2>/dev/null | tee "$LOG_FILE" || true
+
+        rm -f "$PROMPT_FILE"
+
+    # ── Discard IronBee-generated file changes ───────────────────────
+    - name: Discard IronBee config changes
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        # Revert tracked files modified by ironbee install
+        git checkout -- .mcp.json .gitignore .claude/ .ironbee/config.json 2>/dev/null || true
+
+    # ── Collect Evidence ───────────────────────────────────────────────
+    - name: Extract verdict
+      id: verdict
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        # Find the most recently modified verdict file
+        VERDICT_FILE=$(find .ironbee/sessions -name "verdict.json" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+        if [ -n "$VERDICT_FILE" ] && [ -f "$VERDICT_FILE" ]; then
+          STATUS=$(node -e "const v=JSON.parse(require('fs').readFileSync('$VERDICT_FILE','utf8'));console.log(v.status||'unknown')" 2>/dev/null || echo "unknown")
+          echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+          echo "Verdict: $STATUS"
+        else
+          echo "status=unknown" >> "$GITHUB_OUTPUT"
+          echo "No verdict file found"
+        fi
+
+    - name: Collect session artifacts
+      id: collect
+      if: always()
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        ARTIFACTS_DIR=".ironbee/artifacts"
+        HAS_ARTIFACTS=false
+
+        # Copy session logs to artifacts
+        for session_dir in .ironbee/sessions/*/; do
+          if [ -d "$session_dir" ]; then
+            SESSION_ID=$(basename "$session_dir")
+            mkdir -p "$ARTIFACTS_DIR/sessions/$SESSION_ID"
+            cp -f "$session_dir"verdict.json "$ARTIFACTS_DIR/sessions/$SESSION_ID/" 2>/dev/null || true
+            cp -f "$session_dir"actions.jsonl "$ARTIFACTS_DIR/sessions/$SESSION_ID/" 2>/dev/null || true
+            HAS_ARTIFACTS=true
+          fi
+        done
+
+        # Check for any cycle directories with evidence
+        if [ -n "$(find "$ARTIFACTS_DIR" -maxdepth 1 -name 'cycle-*' -type d 2>/dev/null)" ]; then
+          HAS_ARTIFACTS=true
+        fi
+
+        echo "has_artifacts=$HAS_ARTIFACTS" >> "$GITHUB_OUTPUT"
+
+    - name: Upload verification evidence
+      id: upload-artifacts
+      if: always() && steps.collect.outputs.has_artifacts == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ironbee-verification-evidence
+        path: ${{ inputs.working_directory }}/.ironbee/artifacts/
+        retention-days: 30
+
+    # ── PR Comment ─────────────────────────────────────────────────────
+    - name: Post verification report on PR
+      if: always() && github.event_name == 'pull_request'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        ARTIFACTS_DIR=".ironbee/artifacts"
+        ARTIFACT_URL="${{ steps.upload-artifacts.outputs.artifact-url }}"
+        IRONBEE_VERSION="${{ steps.install-cli.outputs.ironbee-version }}"
+        PR_NUMBER="${{ github.event.pull_request.number }}"
+
+        # Build comment body via script
+        BODY_FILE=$(mktemp)
+        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
+          "$ARTIFACTS_DIR" "$IRONBEE_VERSION" "$ARTIFACT_URL" > "$BODY_FILE"
+
+        # Post or update comment (paginate to find existing comment)
+        EXISTING_COMMENT=$(gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments \
+          --paginate --jq '.[] | select(.body | contains("IronBee Verification Report")) | .id' | head -1)
+
+        if [ -n "$EXISTING_COMMENT" ]; then
+          gh api repos/${{ github.repository }}/issues/comments/$EXISTING_COMMENT \
+            -X PATCH -F "body=@$BODY_FILE"
+        else
+          gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE"
+        fi
+
+        rm -f "$BODY_FILE"
+
+    # ── Fix PR for push-to-main ────────────────────────────────────────
+    - name: Create fix PR for main branch
+      if: >-
+        always() &&
+        github.event_name == 'push' &&
+        (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        # Stage only real code changes, excluding IronBee config files
+        git add -A
+        git reset HEAD -- .mcp.json .gitignore .claude/ .ironbee/ 2>/dev/null || true
+
+        if [ -n "$(git diff --cached --name-only)" ]; then
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          BRANCH="ironbee/fix-${SHORT_SHA}-$(date +%s)"
+          ARTIFACTS_DIR=".ironbee/artifacts"
+          IRONBEE_VERSION="${{ steps.install-cli.outputs.ironbee-version }}"
+          ARTIFACT_URL="${{ steps.upload-artifacts.outputs.artifact-url }}"
+
+          # Build PR body via script
+          BODY_FILE=$(mktemp)
+          node "${{ github.action_path }}/scripts/build-pr-comment.js" \
+            "$ARTIFACTS_DIR" "$IRONBEE_VERSION" "$ARTIFACT_URL" > "$BODY_FILE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git commit -m "fix: apply IronBee verification fixes for ${SHORT_SHA}"
+          git push origin "$BRANCH"
+
+          gh pr create \
+            --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
+            --body-file "$BODY_FILE" \
+            --base "${{ github.ref_name }}"
+
+          rm -f "$BODY_FILE"
+        else
+          echo "No code changes to commit — verification issues may require manual review"
+        fi
