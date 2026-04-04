@@ -222,10 +222,11 @@ runs:
         fi
 
         # Core instruction: run the IronBee verify command
-        cat >> /tmp/ironbee-prompt.md << 'PROMPT_COMMAND'
+        cat >> /tmp/ironbee-prompt.md << PROMPT_COMMAND
 
         ## Task
-        1. Review the code changes with git diff
+        1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`
+           IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target.
         2. Run /ironbee-verify to perform browser-based verification
         3. If verification fails, fix the issues and re-verify
         4. Commit any fixes
