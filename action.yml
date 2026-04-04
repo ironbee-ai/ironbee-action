@@ -131,23 +131,19 @@ runs:
       run: |
         mkdir -p .ironbee/artifacts
         MCP_LOG_FILE="$(pwd)/.ironbee/artifacts/browser-devtools-mcp.log"
-        cat > .ironbee/config.json << EOF
-{"recording":{"enable":true},"browserDevTools":{"env":{"LOG_FILE":"${MCP_LOG_FILE}"}}}
-EOF
+        echo "{\"recording\":{\"enable\":true},\"browserDevTools\":{\"env\":{\"LOG_FILE\":\"${MCP_LOG_FILE}\"}}}" > .ironbee/config.json
 
     - name: Setup IronBee for Claude
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
         if [ "${{ inputs.exclude_ironbee_files }}" = "true" ]; then
-          cat >> .git/info/exclude << 'EOF'
-.mcp.json
-.ironbee/
-.claude/settings.json
-.claude/skills/ironbee-*.md
-.claude/rules/ironbee-*.md
-.claude/commands/ironbee-*.md
-EOF
+          echo ".mcp.json" >> .git/info/exclude
+          echo ".ironbee/" >> .git/info/exclude
+          echo ".claude/settings.json" >> .git/info/exclude
+          echo ".claude/skills/ironbee-*.md" >> .git/info/exclude
+          echo ".claude/rules/ironbee-*.md" >> .git/info/exclude
+          echo ".claude/commands/ironbee-*.md" >> .git/info/exclude
         fi
 
         ironbee install --client claude
@@ -187,77 +183,74 @@ EOF
           fi
         fi
 
-        # Build the prompt — delegate to /ironbee-verify which already knows the full workflow
-        cat > /tmp/ironbee-prompt.md << PROMPT_EOF
-You are running in CI. Verify the code changes and fix any issues found.
-
-## Context
-${CONTEXT}
-Diff target: ${DIFF_TARGET}
-PROMPT_EOF
+        # Build the prompt
+        PROMPT=/tmp/ironbee-prompt.md
+        echo "You are running in CI. Verify the code changes and fix any issues found." > "$PROMPT"
+        echo "" >> "$PROMPT"
+        echo "## Context" >> "$PROMPT"
+        echo "${CONTEXT}" >> "$PROMPT"
+        echo "Diff target: ${DIFF_TARGET}" >> "$PROMPT"
 
         # App configuration
         if [ -n "${{ inputs.app_install_command }}" ] || [ -n "${{ inputs.app_build_command }}" ] || [ -n "${{ inputs.app_start_command }}" ] || [ -n "${{ inputs.app_url }}" ]; then
-          echo "" >> /tmp/ironbee-prompt.md
-          echo "## Application" >> /tmp/ironbee-prompt.md
+          echo "" >> "$PROMPT"
+          echo "## Application" >> "$PROMPT"
           if [ -n "${{ inputs.app_install_command }}" ]; then
-            echo "- Install command: \`${{ inputs.app_install_command }}\`" >> /tmp/ironbee-prompt.md
+            echo "- Install command: \`${{ inputs.app_install_command }}\`" >> "$PROMPT"
           fi
           if [ -n "${{ inputs.app_build_command }}" ]; then
-            echo "- Build command: \`${{ inputs.app_build_command }}\`" >> /tmp/ironbee-prompt.md
+            echo "- Build command: \`${{ inputs.app_build_command }}\`" >> "$PROMPT"
           fi
           if [ -n "${{ inputs.app_start_command }}" ]; then
-            echo "- Start command: \`${{ inputs.app_start_command }}\`" >> /tmp/ironbee-prompt.md
+            echo "- Start command: \`${{ inputs.app_start_command }}\`" >> "$PROMPT"
           fi
           if [ -n "${{ inputs.app_url }}" ]; then
-            echo "- Application URL: ${{ inputs.app_url }}" >> /tmp/ironbee-prompt.md
+            echo "- Application URL: ${{ inputs.app_url }}" >> "$PROMPT"
           fi
         fi
 
-        cat >> /tmp/ironbee-prompt.md << PROMPT_EVIDENCE
-
-## Evidence
-Organize artifacts by verification cycle under: ${ARTIFACTS_DIR}/
-Directory structure per cycle:
-  ${ARTIFACTS_DIR}/cycle-<N>-<verdict>/screenshots/
-  ${ARTIFACTS_DIR}/cycle-<N>-<verdict>/recordings/
-Examples:
-  cycle-1-fail/screenshots/homepage-missing-button.png
-  cycle-1-fail/recordings/form-validation.webm
-  cycle-2-pass/screenshots/homepage-fixed.png
-  cycle-2-pass/recordings/form-validation-fixed.webm
-Create the cycle directory at the start of each verification cycle.
-Name the directory with the final verdict after submitting (rename if needed).
-Use descriptive file names that reflect what is being verified.
-PROMPT_EVIDENCE
+        # Evidence instructions
+        echo "" >> "$PROMPT"
+        echo "## Evidence" >> "$PROMPT"
+        echo "Organize artifacts by verification cycle under: ${ARTIFACTS_DIR}/" >> "$PROMPT"
+        echo "Directory structure per cycle:" >> "$PROMPT"
+        echo "  ${ARTIFACTS_DIR}/cycle-<N>-<verdict>/screenshots/" >> "$PROMPT"
+        echo "  ${ARTIFACTS_DIR}/cycle-<N>-<verdict>/recordings/" >> "$PROMPT"
+        echo "Examples:" >> "$PROMPT"
+        echo "  cycle-1-fail/screenshots/homepage-missing-button.png" >> "$PROMPT"
+        echo "  cycle-1-fail/recordings/form-validation.webm" >> "$PROMPT"
+        echo "  cycle-2-pass/screenshots/homepage-fixed.png" >> "$PROMPT"
+        echo "  cycle-2-pass/recordings/form-validation-fixed.webm" >> "$PROMPT"
+        echo "Create the cycle directory at the start of each verification cycle." >> "$PROMPT"
+        echo "Name the directory with the final verdict after submitting (rename if needed)." >> "$PROMPT"
+        echo "Use descriptive file names that reflect what is being verified." >> "$PROMPT"
 
         # Append user's custom prompt
         if [ -n "$USER_PROMPT" ]; then
-          printf "\n## Additional Instructions\n" >> /tmp/ironbee-prompt.md
-          printf "%s\n" "$USER_PROMPT" >> /tmp/ironbee-prompt.md
+          echo "" >> "$PROMPT"
+          echo "## Additional Instructions" >> "$PROMPT"
+          printf "%s\n" "$USER_PROMPT" >> "$PROMPT"
         fi
 
         # Core instruction: run the IronBee verify command
-        cat >> /tmp/ironbee-prompt.md << PROMPT_COMMAND
-
-## Task
-1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`
-   IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target.
-2. Run /ironbee-verify to perform verification
-3. If verification fails, fix the issues and re-verify
-4. Commit any fixes
-PROMPT_COMMAND
+        echo "" >> "$PROMPT"
+        echo "## Task" >> "$PROMPT"
+        echo "1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`" >> "$PROMPT"
+        echo "   IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target." >> "$PROMPT"
+        echo "2. Run /ironbee-verify to perform verification" >> "$PROMPT"
+        echo "3. If verification fails, fix the issues and re-verify" >> "$PROMPT"
+        echo "4. Commit any fixes" >> "$PROMPT"
 
         # Output the prompt (multiline)
         {
           echo "prompt<<PROMPT_DELIM"
-          cat /tmp/ironbee-prompt.md
+          cat "$PROMPT"
           echo "PROMPT_DELIM"
         } >> "$GITHUB_OUTPUT"
 
         if [ "${{ inputs.verbose }}" = "true" ]; then
           echo "::group::Verification prompt"
-          cat /tmp/ironbee-prompt.md
+          cat "$PROMPT"
           echo "::endgroup::"
         fi
 
@@ -287,12 +280,11 @@ PROMPT_COMMAND
       env:
         ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
         CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        PROMPT_CONTENT: ${{ steps.build-prompt.outputs.prompt }}
       run: |
         # Write prompt to file and pipe to claude
         PROMPT_FILE=$(mktemp)
-        cat > "$PROMPT_FILE" << 'PROMPT_END'
-${{ steps.build-prompt.outputs.prompt }}
-PROMPT_END
+        printf "%s" "$PROMPT_CONTENT" > "$PROMPT_FILE"
 
         # Run Claude Code with the verification prompt (stream output for live CI logs)
         LOG_FILE="$(pwd)/.ironbee/artifacts/claude-output.log"
