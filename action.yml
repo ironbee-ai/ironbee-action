@@ -53,6 +53,10 @@ inputs:
     description: 'Additional Claude Code CLI arguments'
     required: false
     default: ''
+  verbose:
+    description: 'Enable verbose logging (tool responses, prompt, artifact list, verdict details)'
+    required: false
+    default: 'false'
   working_directory:
     description: 'Working directory for verification'
     required: false
@@ -233,6 +237,12 @@ runs:
           echo "PROMPT_DELIM"
         } >> "$GITHUB_OUTPUT"
 
+        if [ "${{ inputs.verbose }}" = "true" ]; then
+          echo "::group::Verification prompt"
+          cat /tmp/ironbee-prompt.md
+          echo "::endgroup::"
+        fi
+
     # ── Configure git identity ────────────────────────────────────────
     - name: Configure git identity
       shell: bash
@@ -284,18 +294,18 @@ runs:
           --dangerously-skip-permissions \
           ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }} \
           ${{ inputs.claude_args }} \
-          2>&1 | tee "$LOG_FILE.raw" | jq -r --unbuffered '
+          2>&1 | tee "$LOG_FILE.raw" | VERBOSE="${{ inputs.verbose }}" jq -r --unbuffered --arg verbose "$VERBOSE" '
             if .type == "assistant" and .message.content then
               (.message.content[] |
                 if .type == "text" then "🤖 " + .text
-                elif .type == "tool_use" then "🔧 " + .name + ": " + (.input | tostring | .[0:200])
+                elif .type == "tool_use" then "🔧 " + .name + ": " + (.input | tostring | .[0:500])
                 else empty end)
             elif .type == "user" and .message.content then
               (.message.content[] |
                 if .type == "tool_result" then
                   (if .is_error then "❌ Error: " + (.content | tostring | .[0:500])
-                   else "  ↳ " + (.content | tostring | .[0:500])
-                   end)
+                   elif $verbose == "true" then "  ↳ " + (.content | tostring | .[0:500])
+                   else empty end)
                 else empty end)
             elif .type == "result" then
               "✅ Done (cost: $" + (.total_cost_usd // 0 | tostring) + ", turns: " + (.num_turns // 0 | tostring) + ")"
@@ -326,6 +336,11 @@ runs:
           STATUS=$(node -e "const v=JSON.parse(require('fs').readFileSync('$VERDICT_FILE','utf8'));console.log(v.status||'unknown')" 2>/dev/null || echo "unknown")
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
           echo "Verdict: $STATUS"
+          if [ "${{ inputs.verbose }}" = "true" ]; then
+            echo "::group::Verdict details"
+            cat "$VERDICT_FILE" | node -e "process.stdin.on('data',d=>console.log(JSON.stringify(JSON.parse(d),null,2)))" 2>/dev/null || cat "$VERDICT_FILE"
+            echo "::endgroup::"
+          fi
         else
           echo "status=unknown" >> "$GITHUB_OUTPUT"
           echo "No verdict file found"
@@ -354,6 +369,12 @@ runs:
         # Check for any cycle directories with evidence
         if [ -n "$(find "$ARTIFACTS_DIR" -maxdepth 1 -name 'cycle-*' -type d 2>/dev/null)" ]; then
           HAS_ARTIFACTS=true
+        fi
+
+        if [ "${{ inputs.verbose }}" = "true" ] && [ "$HAS_ARTIFACTS" = "true" ]; then
+          echo "::group::Collected artifacts"
+          find "$ARTIFACTS_DIR" -type f | sort
+          echo "::endgroup::"
         fi
 
         echo "has_artifacts=$HAS_ARTIFACTS" >> "$GITHUB_OUTPUT"
