@@ -92,7 +92,7 @@ function parseCycles(artifactsDir) {
   if (!fs.existsSync(artifactsDir)) return cycles;
 
   const dirs = fs.readdirSync(artifactsDir)
-    .filter(d => d.startsWith('cycle-'))
+    .filter(d => d.startsWith('cycle-') && fs.statSync(path.join(artifactsDir, d)).isDirectory())
     .sort();
 
   for (const dir of dirs) {
