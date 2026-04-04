@@ -81,6 +81,15 @@ outputs:
 runs:
   using: 'composite'
   steps:
+    # ── Validate inputs ─────────────────────────────────────────────
+    - name: Validate auth inputs
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.anthropic_api_key }}" ] && [ -z "${{ inputs.claude_code_oauth_token }}" ]; then
+          echo "::error::Either anthropic_api_key or claude_code_oauth_token must be provided"
+          exit 1
+        fi
+
     # ── Setup ──────────────────────────────────────────────────────────
     - name: Fetch git history for diff
       shell: bash
@@ -121,7 +130,7 @@ runs:
       working-directory: ${{ inputs.working_directory }}
       run: |
         mkdir -p .ironbee/artifacts
-        MCP_LOG_FILE="${{ github.workspace }}/${{ inputs.working_directory }}/.ironbee/artifacts/browser-devtools-mcp.log"
+        MCP_LOG_FILE="$(pwd)/.ironbee/artifacts/browser-devtools-mcp.log"
         cat > .ironbee/config.json << EOF
         {"recording":{"enable":true},"browserDevTools":{"env":{"LOG_FILE":"${MCP_LOG_FILE}"}}}
         EOF
@@ -162,7 +171,7 @@ runs:
       env:
         USER_PROMPT: ${{ inputs.prompt }}
       run: |
-        ARTIFACTS_DIR="${{ github.workspace }}/${{ inputs.working_directory }}/.ironbee/artifacts"
+        ARTIFACTS_DIR="$(pwd)/.ironbee/artifacts"
 
         # Determine trigger context
         if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -286,7 +295,7 @@ runs:
         PROMPT_END
 
         # Run Claude Code with the verification prompt (stream output for live CI logs)
-        LOG_FILE="${{ github.workspace }}/${{ inputs.working_directory }}/.ironbee/artifacts/claude-output.log"
+        LOG_FILE="$(pwd)/.ironbee/artifacts/claude-output.log"
 
         cat "$PROMPT_FILE" | claude --output-format stream-json --verbose \
           --max-turns ${{ inputs.max_turns }} \
@@ -330,7 +339,7 @@ runs:
       working-directory: ${{ inputs.working_directory }}
       run: |
         # Find the most recently modified verdict file
-        VERDICT_FILE=$(find .ironbee/sessions -name "verdict.json" -type f -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+        VERDICT_FILE=$(find .ironbee/sessions -name "verdict.json" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
         if [ -n "$VERDICT_FILE" ] && [ -f "$VERDICT_FILE" ]; then
           STATUS=$(node -e "const v=JSON.parse(require('fs').readFileSync('$VERDICT_FILE','utf8'));console.log(v.status||'unknown')" 2>/dev/null || echo "unknown")
           echo "status=$STATUS" >> "$GITHUB_OUTPUT"
@@ -440,6 +449,13 @@ runs:
         SHORT_SHA=$(echo "$ORIGINAL_SHA" | cut -c1-7)
         BRANCH="ironbee/fix-${SHORT_SHA}-$(date +%s)"
 
+        # Build PR body before reset (artifacts are in working tree)
+        BODY_FILE=$(mktemp)
+        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
+          ".ironbee/artifacts" \
+          "${{ steps.install-cli.outputs.ironbee-version }}" \
+          "${{ steps.upload-artifacts.outputs.artifact-url }}" > "$BODY_FILE"
+
         # Commit any uncommitted changes left by Claude Code
         git add -A
         if [ "${{ inputs.exclude_ironbee_files }}" = "true" ]; then
@@ -453,13 +469,6 @@ runs:
         git branch "$BRANCH"
         git reset --hard "$ORIGINAL_SHA"
         git push origin "$BRANCH"
-
-        # Build PR body
-        BODY_FILE=$(mktemp)
-        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
-          ".ironbee/artifacts" \
-          "${{ steps.install-cli.outputs.ironbee-version }}" \
-          "${{ steps.upload-artifacts.outputs.artifact-url }}" > "$BODY_FILE"
 
         gh pr create \
           --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
