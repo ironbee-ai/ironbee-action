@@ -5,7 +5,7 @@
 // Usage: node build-pr-comment.js <artifacts-dir> <ironbee-version> [artifact-url]
 //
 // Reads:
-//   - <artifacts-dir>/cycle-N-verdict/ directories for evidence files
+//   - <artifacts-dir>/cycle-*/ directories for evidence files
 //   - <artifacts-dir>/sessions/<id>/actions.jsonl for verdict details
 //
 // Outputs markdown to stdout.
@@ -86,6 +86,7 @@ function parseVerdicts(artifactsDir) {
 }
 
 // Parse cycle directories for evidence files.
+// Directory name format: cycle-<N>-* (any suffix, verdict comes from actions.jsonl)
 function parseCycles(artifactsDir) {
   const cycles = [];
 
@@ -96,17 +97,16 @@ function parseCycles(artifactsDir) {
     .sort();
 
   for (const dir of dirs) {
-    const match = dir.match(/^cycle-(\d+)-(.+)$/);
+    const match = dir.match(/^cycle-(\d+)/);
     if (!match) continue;
 
     const num = parseInt(match[1], 10);
-    const verdict = match[2];
     const cycleDir = path.join(artifactsDir, dir);
 
     const screenshots = listFiles(path.join(cycleDir, 'screenshots'));
     const recordings = listFiles(path.join(cycleDir, 'recordings'));
 
-    cycles.push({ num, verdict, screenshots, recordings });
+    cycles.push({ num, screenshots, recordings });
   }
 
   return cycles;
@@ -126,6 +126,7 @@ function listFiles(dir) {
 function matchVerdictsWithCycles(verdicts, cycles) {
   return cycles.map((cycle, i) => ({
     ...cycle,
+    verdict: verdicts[i]?.status || 'unknown',
     details: verdicts[i] || null,
   }));
 }
@@ -134,7 +135,7 @@ function matchVerdictsWithCycles(verdicts, cycles) {
 function getFinalVerdict(matched) {
   if (matched.length === 0) return 'unknown';
   const last = matched[matched.length - 1];
-  return last.details?.status || last.verdict || 'unknown';
+  return last.verdict;
 }
 
 // Format the top-level badge line.
@@ -146,7 +147,6 @@ function formatBadge(verdict, cycleCount) {
 }
 
 // Format a single verification cycle as markdown.
-// Uses "Cycle 1" instead of "Cycle #1" to avoid GitHub auto-linking to issues.
 function formatCycle(cycle) {
   const lines = [];
   const icon = cycle.verdict === 'pass' ? '\u2705' : cycle.verdict === 'fail' ? '\u274C' : '\u26A0\uFE0F';
@@ -157,7 +157,6 @@ function formatCycle(cycle) {
   const d = cycle.details;
 
   if (d) {
-    // Pages tested
     if (d.pages_tested && d.pages_tested.length > 0) {
       lines.push('**Pages Tested:**');
       for (const p of d.pages_tested) {
@@ -166,7 +165,6 @@ function formatCycle(cycle) {
       lines.push('');
     }
 
-    // Checks
     if (d.checks && d.checks.length > 0) {
       lines.push('**Checks:**');
       for (const c of d.checks) {
@@ -175,7 +173,6 @@ function formatCycle(cycle) {
       lines.push('');
     }
 
-    // Issues (fail verdict)
     if (d.issues && d.issues.length > 0) {
       lines.push('**Issues:**');
       for (const issue of d.issues) {
@@ -184,7 +181,6 @@ function formatCycle(cycle) {
       lines.push('');
     }
 
-    // Fixes (pass after fail)
     if (d.fixes && d.fixes.length > 0) {
       lines.push('**Fixes Applied:**');
       for (const fix of d.fixes) {
@@ -194,7 +190,6 @@ function formatCycle(cycle) {
     }
   }
 
-  // Evidence
   if (cycle.screenshots.length > 0) {
     lines.push(`**Screenshots:** ${cycle.screenshots.join(', ')}`);
   }
