@@ -29,7 +29,7 @@ function main() {
   const lines = [];
 
   // Header
-  lines.push('## \uD83D\uDC1D IronBee Verification Report');
+  lines.push('## <img src="https://ironbee.ai/favicon.png" width="24" height="24"> IronBee Verification Report');
   lines.push('');
   lines.push(formatBadge(finalVerdict, matched.length));
   lines.push('');
