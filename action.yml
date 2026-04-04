@@ -21,20 +21,20 @@ inputs:
     description: 'IronBee CLI version to install (e.g., "0.4.1", "latest")'
     required: false
     default: 'latest'
-  app_url:
-    description: 'Application URL for browser verification (e.g., "http://localhost:3000")'
-    required: false
-    default: ''
-  app_start_command:
-    description: 'Command to start the application (e.g., "npm run dev")'
-    required: false
-    default: ''
   app_install_command:
     description: 'Command to install application dependencies (e.g., "npm ci")'
     required: false
     default: ''
   app_build_command:
     description: 'Command to build the application before verification (e.g., "npm run build")'
+    required: false
+    default: ''
+  app_start_command:
+    description: 'Command to start the application (e.g., "npm run dev")'
+    required: false
+    default: ''
+  app_url:
+    description: 'Application URL for browser verification (e.g., "http://localhost:3000")'
     required: false
     default: ''
   prompt:
@@ -53,14 +53,6 @@ inputs:
     description: 'Additional Claude Code CLI arguments'
     required: false
     default: ''
-  use_bedrock:
-    description: 'Use Amazon Bedrock for Claude API'
-    required: false
-    default: 'false'
-  use_vertex:
-    description: 'Use Google Vertex AI for Claude API'
-    required: false
-    default: 'false'
   working_directory:
     description: 'Working directory for verification'
     required: false
@@ -264,8 +256,6 @@ runs:
           --dangerously-skip-permissions
           ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }}
           ${{ inputs.claude_args }}
-        use_bedrock: ${{ inputs.use_bedrock }}
-        use_vertex: ${{ inputs.use_vertex }}
         show_full_output: 'true'
 
     # Use Claude Code CLI directly for push events (claude-code-action doesn't support push)
