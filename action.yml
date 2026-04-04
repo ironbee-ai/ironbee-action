@@ -408,12 +408,25 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        # Stage only real code changes, excluding IronBee config files
+        ORIGINAL_SHA="${{ github.sha }}"
+        CURRENT_SHA=$(git rev-parse HEAD)
+        HAS_NEW_COMMITS=false
+        HAS_UNCOMMITTED=false
+
+        # Check if Claude Code made new commits during verification
+        if [ "$ORIGINAL_SHA" != "$CURRENT_SHA" ]; then
+          HAS_NEW_COMMITS=true
+        fi
+
+        # Check for uncommitted changes (stage real code changes only)
         git add -A
         git reset HEAD -- .mcp.json .gitignore .claude/ .ironbee/ 2>/dev/null || true
-
         if [ -n "$(git diff --cached --name-only)" ]; then
-          SHORT_SHA=$(git rev-parse --short HEAD)
+          HAS_UNCOMMITTED=true
+        fi
+
+        if [ "$HAS_NEW_COMMITS" = true ] || [ "$HAS_UNCOMMITTED" = true ]; then
+          SHORT_SHA=$(echo "$ORIGINAL_SHA" | cut -c1-7)
           BRANCH="ironbee/fix-${SHORT_SHA}-$(date +%s)"
           ARTIFACTS_DIR=".ironbee/artifacts"
           IRONBEE_VERSION="${{ steps.install-cli.outputs.ironbee-version }}"
@@ -426,16 +439,27 @@ runs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Commit any remaining uncommitted changes
+          if [ "$HAS_UNCOMMITTED" = true ]; then
+            git commit -m "fix: apply IronBee verification fixes for ${SHORT_SHA}"
+          fi
+
+          # Create branch from current state (includes Claude Code's commits + any new commit)
           git checkout -b "$BRANCH"
-          git commit -m "fix: apply IronBee verification fixes for ${SHORT_SHA}"
           git push origin "$BRANCH"
+
+          # Reset main back to original SHA so we don't push fixes directly to main
+          git checkout "${{ github.ref_name }}"
+          git reset --hard "$ORIGINAL_SHA"
 
           gh pr create \
             --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
             --body-file "$BODY_FILE" \
-            --base "${{ github.ref_name }}"
+            --base "${{ github.ref_name }}" \
+            --head "$BRANCH"
 
           rm -f "$BODY_FILE"
         else
-          echo "No code changes to commit — verification issues may require manual review"
+          echo "No code changes detected — verification issues may require manual review"
         fi
