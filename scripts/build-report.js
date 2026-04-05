@@ -106,7 +106,7 @@ function parseCycles(artifactsDir) {
     const num = parseInt(match[1], 10);
     const cycleDir = path.join(artifactsDir, dir);
     const screenshots = listFiles(path.join(cycleDir, 'screenshots')).map(f => ({ name: f, dir }));
-    const recordings = listFiles(path.join(cycleDir, 'recordings')).map(f => ({ name: f, dir }));
+    const recordings = listFiles(path.join(cycleDir, 'recordings')).filter(f => f.endsWith('.webm')).map(f => ({ name: f, dir }));
 
     if (byNum.has(num)) {
       const existing = byNum.get(num);
