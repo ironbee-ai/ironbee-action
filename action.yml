@@ -405,7 +405,9 @@ runs:
 
         # Generate thumbnails for recordings
         # Resolve ffmpeg from Playwright's registry or system PATH
-        FFMPEG_PATH=$(find ~/.cache/ms-playwright -name ffmpeg -type f 2>/dev/null | head -1)
+        echo "Playwright cache contents:"
+        find ~/.cache/ms-playwright -name 'ffmpeg*' 2>/dev/null || echo "  (empty or not found)"
+        FFMPEG_PATH=$(find ~/.cache/ms-playwright -name 'ffmpeg*' -type f 2>/dev/null | head -1)
         if [ -z "$FFMPEG_PATH" ]; then
           FFMPEG_PATH=$(which ffmpeg 2>/dev/null || true)
         fi
