@@ -222,7 +222,7 @@ function formatCycle(cycle, s3BaseUrl) {
       lines.push('');
       for (const r of cycle.recordings) {
         const videoUrl = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(r.name)}`;
-        const thumbName = r.name.replace(/\.webm$/, '-thumb.jpg');
+        const thumbName = r.name.replace(/\.webm$/, '-thumb.png');
         const thumbUrl = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(thumbName)}`;
         lines.push(`<details><summary>\uD83C\uDFA5 ${r.name}</summary>`);
         lines.push('');
