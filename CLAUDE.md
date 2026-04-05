@@ -66,6 +66,7 @@ LICENSE                   # MIT
 - User prompt passed via env var to prevent shell command substitution
 - No heredocs in action.yml — all content written via echo/printf to avoid YAML parsing issues
 - Trigger-aware: adapts prompt and fix behavior based on event type
+- **NEVER update the `v1` tag** — it is published on GitHub Marketplace and used by external users. Use `v0` tag for development and testing
 
 ## Related Projects
 
