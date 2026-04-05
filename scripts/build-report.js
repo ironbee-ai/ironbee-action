@@ -219,11 +219,18 @@ function formatCycle(cycle, s3BaseUrl) {
   if (cycle.recordings.length > 0) {
     if (s3BaseUrl) {
       lines.push('**Recordings:**');
-      for (const r of cycle.recordings) {
-        const url = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(r.name)}`;
-        lines.push(`- [\uD83C\uDFA5 ${r.name}](${url})`);
-      }
       lines.push('');
+      for (const r of cycle.recordings) {
+        const videoUrl = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(r.name)}`;
+        const thumbName = r.name.replace(/\.webm$/, '-thumb.jpg');
+        const thumbUrl = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(thumbName)}`;
+        lines.push(`<details><summary>\uD83C\uDFA5 ${r.name}</summary>`);
+        lines.push('');
+        lines.push(`[![${r.name}](${thumbUrl})](${videoUrl})`);
+        lines.push('');
+        lines.push('</details>');
+        lines.push('');
+      }
     } else {
       lines.push(`**Recordings:** ${cycle.recordings.map(r => r.name).join(', ')}`);
     }
