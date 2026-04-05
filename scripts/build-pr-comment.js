@@ -2,11 +2,14 @@
 
 // Builds a markdown PR comment from IronBee verification artifacts.
 //
-// Usage: node build-pr-comment.js <artifacts-dir> <ironbee-version> [artifact-url]
+// Usage: node build-pr-comment.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]
 //
 // Reads:
 //   - <artifacts-dir>/cycle-*/ directories for evidence files
 //   - <artifacts-dir>/sessions/<id>/actions.jsonl for verdict details
+//
+// When s3-base-url is provided, screenshots are rendered as inline images
+// and recordings as clickable links. Otherwise, file names are listed.
 //
 // Outputs markdown to stdout.
 
@@ -14,10 +17,10 @@ const fs = require('fs');
 const path = require('path');
 
 function main() {
-  const [artifactsDir, ironbeeVersion, artifactUrl] = process.argv.slice(2);
+  const [artifactsDir, ironbeeVersion, artifactUrl, s3BaseUrl] = process.argv.slice(2);
 
   if (!artifactsDir || !ironbeeVersion) {
-    console.error('Usage: node build-pr-comment.js <artifacts-dir> <ironbee-version> [artifact-url]');
+    console.error('Usage: node build-pr-comment.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]');
     process.exit(1);
   }
 
@@ -38,7 +41,7 @@ function main() {
   for (const cycle of matched) {
     lines.push('---');
     lines.push('');
-    lines.push(formatCycle(cycle));
+    lines.push(formatCycle(cycle, s3BaseUrl));
     lines.push('');
   }
 
@@ -102,8 +105,8 @@ function parseCycles(artifactsDir) {
 
     const num = parseInt(match[1], 10);
     const cycleDir = path.join(artifactsDir, dir);
-    const screenshots = listFiles(path.join(cycleDir, 'screenshots'));
-    const recordings = listFiles(path.join(cycleDir, 'recordings'));
+    const screenshots = listFiles(path.join(cycleDir, 'screenshots')).map(f => ({ name: f, dir }));
+    const recordings = listFiles(path.join(cycleDir, 'recordings')).map(f => ({ name: f, dir }));
 
     if (byNum.has(num)) {
       const existing = byNum.get(num);
@@ -152,7 +155,7 @@ function formatBadge(verdict, cycleCount) {
 }
 
 // Format a single verification cycle as markdown.
-function formatCycle(cycle) {
+function formatCycle(cycle, s3BaseUrl) {
   const lines = [];
   const icon = cycle.verdict === 'pass' ? '\u2705' : cycle.verdict === 'fail' ? '\u274C' : '\u26A0\uFE0F';
 
@@ -195,13 +198,33 @@ function formatCycle(cycle) {
     }
   }
 
+  // Evidence
   if (cycle.screenshots.length > 0) {
-    lines.push(`**Screenshots:** ${cycle.screenshots.join(', ')}`);
+    if (s3BaseUrl) {
+      lines.push('**Screenshots:**');
+      lines.push('');
+      for (const s of cycle.screenshots) {
+        const url = `${s3BaseUrl}/${s.dir}/screenshots/${encodeURIComponent(s.name)}`;
+        lines.push(`![${s.name}](${url})`);
+        lines.push('');
+      }
+    } else {
+      lines.push(`**Screenshots:** ${cycle.screenshots.map(s => s.name).join(', ')}`);
+    }
   }
   if (cycle.recordings.length > 0) {
-    lines.push(`**Recordings:** ${cycle.recordings.join(', ')}`);
+    if (s3BaseUrl) {
+      lines.push('**Recordings:**');
+      for (const r of cycle.recordings) {
+        const url = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(r.name)}`;
+        lines.push(`- [\uD83C\uDFA5 ${r.name}](${url})`);
+      }
+      lines.push('');
+    } else {
+      lines.push(`**Recordings:** ${cycle.recordings.map(r => r.name).join(', ')}`);
+    }
   }
-  if (cycle.screenshots.length > 0 || cycle.recordings.length > 0) {
+  if (!s3BaseUrl && (cycle.screenshots.length > 0 || cycle.recordings.length > 0)) {
     lines.push('');
   }
 

@@ -45,6 +45,7 @@ LICENSE                   # MIT
 **Versions:** `ironbee_cli_version`, `claude_code_cli_version`
 **App:** `app_url`, `app_start_command`, `app_build_command`, `app_install_command`
 **Claude:** `prompt`, `model`, `max_turns`, `claude_args`
+**AWS (optional S3 upload):** `aws_iam_role`, `aws_region`, `aws_s3_bucket`
 **Options:** `exclude_ironbee_files`, `verbose`, `working_directory`
 
 ## Action Outputs
@@ -61,6 +62,7 @@ LICENSE                   # MIT
 - IronBee hooks enforce verification flow (recording, screenshots, verdicts)
 - PR comments are created/updated (not duplicated) using GitHub API
 - Evidence uploaded via `actions/upload-artifact@v4` with 30-day retention
+- Optional S3 upload via AWS OIDC — enables inline screenshot rendering in PR comments
 - User prompt passed via env var to prevent shell command substitution
 - No heredocs in action.yml — all content written via echo/printf to avoid YAML parsing issues
 - Trigger-aware: adapts prompt and fix behavior based on event type

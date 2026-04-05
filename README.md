@@ -100,6 +100,7 @@ The action requires these GitHub token permissions:
 | `contents: write` | Yes | Commit fixes to PR branches, create fix branches |
 | `pull-requests: write` | Yes | Post verification report comments on PRs, create fix PRs |
 | `issues: write` | Yes | Update PR comments via GitHub API |
+| `id-token: write` | Only with S3 | Required for AWS OIDC authentication when using S3 upload |
 
 ## Usage Examples
 
@@ -143,6 +144,28 @@ By default, IronBee config files are committed to the repo so they can be used i
     exclude_ironbee_files: 'true'
 ```
 
+### With S3 Upload (Inline Screenshots in PR Comments)
+
+Upload evidence to a publicly readable S3 bucket for inline screenshot rendering in PR comments. Requires AWS OIDC configured with an IAM role.
+
+```yaml
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write  # Required for AWS OIDC
+
+steps:
+  - uses: actions/checkout@v4
+
+  - uses: ironbee-ai/ironbee-action@v1
+    with:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+      aws_iam_role: 'arn:aws:iam::123456789012:role/github-actions-s3'
+      aws_region: 'us-east-1'
+      aws_s3_bucket: 'my-verification-evidence'
+```
+
 ### Verbose Logging
 
 ```yaml
@@ -169,6 +192,9 @@ By default, IronBee config files are committed to the repo so they can be used i
 | `model` | No | | Claude model override |
 | `max_turns` | No | `100` | Maximum conversation turns |
 | `claude_args` | No | | Additional Claude Code CLI arguments |
+| `aws_iam_role` | No | | AWS IAM role ARN for S3 upload (enables inline images) |
+| `aws_region` | No | | AWS region for S3 upload |
+| `aws_s3_bucket` | No | | S3 bucket name (must be publicly readable) |
 | `exclude_ironbee_files` | No | `false` | Exclude IronBee config files from commits |
 | `verbose` | No | `false` | Enable verbose CI logging |
 | `working_directory` | No | `.` | Working directory for verification |
