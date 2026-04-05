@@ -471,7 +471,7 @@ runs:
 
         # Build comment body via script
         BODY_FILE=$(mktemp)
-        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
+        node "${{ github.action_path }}/scripts/build-report.js" \
           "$ARTIFACTS_DIR" "$IRONBEE_VERSION" "$ARTIFACT_URL" "$S3_BASE_URL" > "$BODY_FILE"
 
         # Post or update comment (paginate to find existing comment)
@@ -510,7 +510,7 @@ runs:
 
         # Build PR body before reset (artifacts are in working tree)
         BODY_FILE=$(mktemp)
-        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
+        node "${{ github.action_path }}/scripts/build-report.js" \
           ".ironbee/artifacts" \
           "${{ steps.install-cli.outputs.ironbee-version }}" \
           "${{ steps.upload-artifacts.outputs.artifact-url }}" \

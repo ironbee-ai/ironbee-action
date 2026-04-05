@@ -22,14 +22,14 @@ This is a **composite GitHub Action** that orchestrates [IronBee CLI](https://gi
 
 ## Architecture
 
-This is a **composite action** (`runs: using: composite`) — not a JS action. It runs Claude Code CLI directly (not via `claude-code-action`). The only JS code is `scripts/build-pr-comment.js` for generating PR comment markdown from verification artifacts.
+This is a **composite action** (`runs: using: composite`) — not a JS action. It runs Claude Code CLI directly (not via `claude-code-action`). The only JS code is `scripts/build-report.js` for generating verification report markdown from artifacts.
 
 ## Project Structure
 
 ```
 action.yml                # Composite action definition (the entire action logic)
 scripts/
-  build-pr-comment.js     # Generates PR comment markdown from verification artifacts
+  build-report.js     # Generates verification report markdown from artifacts
 .github/workflows/
   build.yml               # CI: validate action.yml
   release.yml             # Release: tag + GitHub Release

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-// Builds a markdown PR comment from IronBee verification artifacts.
+// Builds a markdown verification report from IronBee artifacts.
 //
-// Usage: node build-pr-comment.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]
+// Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]
 //
 // Reads:
 //   - <artifacts-dir>/cycle-*/ directories for evidence files
@@ -20,7 +20,7 @@ function main() {
   const [artifactsDir, ironbeeVersion, artifactUrl, s3BaseUrl] = process.argv.slice(2);
 
   if (!artifactsDir || !ironbeeVersion) {
-    console.error('Usage: node build-pr-comment.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]');
+    console.error('Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]');
     process.exit(1);
   }
 
