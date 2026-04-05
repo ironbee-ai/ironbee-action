@@ -205,7 +205,11 @@ function formatCycle(cycle, s3BaseUrl) {
       lines.push('');
       for (const s of cycle.screenshots) {
         const url = `${s3BaseUrl}/${s.dir}/screenshots/${encodeURIComponent(s.name)}`;
+        lines.push(`<details><summary>${s.name}</summary>`);
+        lines.push('');
         lines.push(`![${s.name}](${url})`);
+        lines.push('');
+        lines.push('</details>');
         lines.push('');
       }
     } else {
