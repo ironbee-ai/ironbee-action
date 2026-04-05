@@ -61,6 +61,18 @@ inputs:
     description: 'Exclude IronBee config files from commits (set true to prevent .ironbee/, .claude/, .mcp.json from being committed)'
     required: false
     default: 'false'
+  aws_iam_role:
+    description: 'AWS IAM role ARN to assume for S3 upload (enables inline images in PR comments)'
+    required: false
+    default: ''
+  aws_region:
+    description: 'AWS region for S3 upload'
+    required: false
+    default: ''
+  aws_s3_bucket:
+    description: 'AWS S3 bucket name for uploading verification evidence (must be publicly readable)'
+    required: false
+    default: ''
   verbose:
     description: 'Enable verbose logging (tool responses, prompt, artifact list, verdict details)'
     required: false
@@ -157,7 +169,7 @@ runs:
 
     - name: Install Chromium and system dependencies
       shell: bash
-      run: npx -y playwright install --with-deps chromium
+      run: npx -y playwright install --with-deps chromium ffmpeg
 
     # ── Build Verification Prompt ──────────────────────────────────────
     - name: Build verification prompt
@@ -391,6 +403,25 @@ runs:
           HAS_ARTIFACTS=true
         fi
 
+        # Generate thumbnails for recordings
+        # Resolve ffmpeg from Playwright's registry or system PATH
+        echo "Playwright cache contents:"
+        find ~/.cache/ms-playwright -name 'ffmpeg*' 2>/dev/null || echo "  (empty or not found)"
+        FFMPEG_PATH=$(find ~/.cache/ms-playwright -name 'ffmpeg*' -type f 2>/dev/null | head -1)
+        if [ -z "$FFMPEG_PATH" ]; then
+          FFMPEG_PATH=$(which ffmpeg 2>/dev/null || true)
+        fi
+        echo "ffmpeg path: ${FFMPEG_PATH:-not found}"
+        RECORDINGS=$(find "$ARTIFACTS_DIR" -path '*/recordings/*.webm' -type f 2>/dev/null)
+        echo "Recordings found: ${RECORDINGS:-none}"
+        if [ -n "$FFMPEG_PATH" ] && [ -n "$RECORDINGS" ]; then
+          for recording in $RECORDINGS; do
+            THUMB="${recording%.webm}-thumb.png"
+            "$FFMPEG_PATH" -ss 5 -i "$recording" -frames:v 1 "$THUMB" -y 2>&1 && \
+              echo "Generated thumbnail: $THUMB" || echo "Failed to generate thumbnail for $recording"
+          done
+        fi
+
         if [ "${{ inputs.verbose }}" = "true" ] && [ "$HAS_ARTIFACTS" = "true" ]; then
           echo "::group::Collected artifacts"
           find "$ARTIFACTS_DIR" -type f | sort
@@ -408,6 +439,41 @@ runs:
         path: ${{ inputs.working_directory }}/.ironbee/artifacts/
         retention-days: 30
 
+    # ── S3 Upload (optional) ──────────────────────────────────────────
+    - name: Configure AWS credentials
+      if: >-
+        always() &&
+        steps.collect.outputs.has_artifacts == 'true' &&
+        inputs.aws_iam_role != '' &&
+        inputs.aws_region != '' &&
+        inputs.aws_s3_bucket != ''
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws_iam_role }}
+        aws-region: ${{ inputs.aws_region }}
+
+    - name: Upload evidence to S3
+      id: s3-upload
+      if: >-
+        always() &&
+        steps.collect.outputs.has_artifacts == 'true' &&
+        inputs.aws_iam_role != '' &&
+        inputs.aws_region != '' &&
+        inputs.aws_s3_bucket != ''
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        ARTIFACTS_DIR=".ironbee/artifacts"
+        BUCKET="${{ inputs.aws_s3_bucket }}"
+        S3_PREFIX="${{ github.repository }}/${{ github.run_id }}"
+
+        aws s3 cp "$ARTIFACTS_DIR" "s3://${BUCKET}/${S3_PREFIX}/" \
+          --recursive --quiet
+
+        S3_BASE_URL="https://${BUCKET}.s3.${{ inputs.aws_region }}.amazonaws.com/${S3_PREFIX}"
+        echo "base_url=${S3_BASE_URL}" >> "$GITHUB_OUTPUT"
+        echo "Uploaded evidence to ${S3_BASE_URL}"
+
     # ── PR Comment ─────────────────────────────────────────────────────
     - name: Post verification report on PR
       if: always() && github.event_name == 'pull_request'
@@ -419,12 +485,13 @@ runs:
         ARTIFACTS_DIR=".ironbee/artifacts"
         ARTIFACT_URL="${{ steps.upload-artifacts.outputs.artifact-url }}"
         IRONBEE_VERSION="${{ steps.install-cli.outputs.ironbee-version }}"
+        S3_BASE_URL="${{ steps.s3-upload.outputs.base_url }}"
         PR_NUMBER="${{ github.event.pull_request.number }}"
 
         # Build comment body via script
         BODY_FILE=$(mktemp)
-        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
-          "$ARTIFACTS_DIR" "$IRONBEE_VERSION" "$ARTIFACT_URL" > "$BODY_FILE"
+        node "${{ github.action_path }}/scripts/build-report.js" \
+          "$ARTIFACTS_DIR" "$IRONBEE_VERSION" "$ARTIFACT_URL" "$S3_BASE_URL" > "$BODY_FILE"
 
         # Post or update comment (paginate to find existing comment)
         EXISTING_COMMENT=$(gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments \
@@ -462,10 +529,11 @@ runs:
 
         # Build PR body before reset (artifacts are in working tree)
         BODY_FILE=$(mktemp)
-        node "${{ github.action_path }}/scripts/build-pr-comment.js" \
+        node "${{ github.action_path }}/scripts/build-report.js" \
           ".ironbee/artifacts" \
           "${{ steps.install-cli.outputs.ironbee-version }}" \
-          "${{ steps.upload-artifacts.outputs.artifact-url }}" > "$BODY_FILE"
+          "${{ steps.upload-artifacts.outputs.artifact-url }}" \
+          "${{ steps.s3-upload.outputs.base_url }}" > "$BODY_FILE"
 
         # Commit any uncommitted changes left by Claude Code
         git add -A
