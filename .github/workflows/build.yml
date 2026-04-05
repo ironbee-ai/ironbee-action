@@ -1,0 +1,29 @@
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate action.yml
+        run: |
+          # Check action.yml exists and is valid YAML
+          python3 -c "
+          import yaml, sys
+          with open('action.yml') as f:
+              data = yaml.safe_load(f)
+          assert 'name' in data, 'Missing name'
+          assert 'inputs' in data, 'Missing inputs'
+          assert 'runs' in data, 'Missing runs'
+          assert data['runs']['using'] == 'composite', 'Not a composite action'
+          print('action.yml is valid')
+          "
