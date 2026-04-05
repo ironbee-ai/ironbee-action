@@ -405,15 +405,18 @@ runs:
 
         # Generate thumbnails for recordings
         # Resolve ffmpeg from Playwright's registry or system PATH
-        FFMPEG_PATH=$(node -e "try{const{registry}=require('playwright-core/lib/server/registry/index');const f=registry.findExecutable('ffmpeg');console.log(f.executablePath()||'')}catch{}" 2>/dev/null)
+        FFMPEG_PATH=$(node -e "try{const{registry}=require('playwright-core/lib/server/registry/index');const f=registry.findExecutable('ffmpeg');console.log(f.executablePath()||'')}catch{console.log('')}" 2>/dev/null)
         if [ -z "$FFMPEG_PATH" ]; then
           FFMPEG_PATH=$(which ffmpeg 2>/dev/null || true)
         fi
-        if [ -n "$FFMPEG_PATH" ]; then
-          for recording in $(find "$ARTIFACTS_DIR" -path '*/recordings/*.webm' -type f 2>/dev/null); do
+        echo "ffmpeg path: ${FFMPEG_PATH:-not found}"
+        RECORDINGS=$(find "$ARTIFACTS_DIR" -path '*/recordings/*.webm' -type f 2>/dev/null)
+        echo "Recordings found: ${RECORDINGS:-none}"
+        if [ -n "$FFMPEG_PATH" ] && [ -n "$RECORDINGS" ]; then
+          for recording in $RECORDINGS; do
             THUMB="${recording%.webm}-thumb.jpg"
-            "$FFMPEG_PATH" -i "$recording" -frames:v 1 -q:v 2 "$THUMB" -y 2>/dev/null && \
-              echo "Generated thumbnail: $THUMB" || true
+            "$FFMPEG_PATH" -i "$recording" -frames:v 1 -q:v 2 "$THUMB" -y 2>&1 && \
+              echo "Generated thumbnail: $THUMB" || echo "Failed to generate thumbnail for $recording"
           done
         fi
 
