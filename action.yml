@@ -417,7 +417,7 @@ runs:
         if [ -n "$FFMPEG_PATH" ] && [ -n "$RECORDINGS" ]; then
           for recording in $RECORDINGS; do
             THUMB="${recording%.webm}-thumb.png"
-            "$FFMPEG_PATH" -i "$recording" -frames:v 1 "$THUMB" -y 2>&1 && \
+            "$FFMPEG_PATH" -ss 3 -i "$recording" -frames:v 1 "$THUMB" -y 2>&1 && \
               echo "Generated thumbnail: $THUMB" || echo "Failed to generate thumbnail for $recording"
           done
         fi
