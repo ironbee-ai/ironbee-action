@@ -405,7 +405,10 @@ runs:
 
         # Generate thumbnails for recordings
         # Resolve ffmpeg from Playwright's registry or system PATH
-        FFMPEG_PATH=$(node -e "try{const{registry}=require('playwright-core/lib/server/registry/index');const f=registry.findExecutable('ffmpeg');console.log(f.executablePath()||'')}catch{console.log('')}" 2>/dev/null)
+        FFMPEG_PATH=$(node -e "try{const r=require(require('path').join(require('child_process').execSync('npm root -g',{encoding:'utf8'}).trim(),'playwright-core/lib/server/registry/index')).registry;console.log(r.findExecutable('ffmpeg').executablePath()||'')}catch{console.log('')}" 2>/dev/null)
+        if [ -z "$FFMPEG_PATH" ]; then
+          FFMPEG_PATH=$(find ~/.cache/ms-playwright -name ffmpeg -type f 2>/dev/null | head -1)
+        fi
         if [ -z "$FFMPEG_PATH" ]; then
           FFMPEG_PATH=$(which ffmpeg 2>/dev/null || true)
         fi
