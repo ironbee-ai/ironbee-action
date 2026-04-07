@@ -2,6 +2,10 @@
 
 GitHub Action for [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) — Verify and fix code changes using browser-based testing with Claude Code.
 
+## Demo
+
+https://github.com/user-attachments/assets/4015258a-a6d5-45dd-8ddf-5d736d489436
+
 ## What It Does
 
 IronBee Action automatically verifies code changes in a real browser and fixes issues found. It orchestrates [Claude Code CLI](https://github.com/anthropics/claude-code) with [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) to:
