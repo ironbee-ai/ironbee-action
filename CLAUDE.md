@@ -1,6 +1,6 @@
 # IronBee Action
 
-GitHub Action for IronBee CLI — Verify and fix code changes using browser-based testing with Claude Code.
+GitHub Action for IronBee CLI — Verify and fix code changes using IronBee DevTools (browser, backend, Node.js) with Claude Code.
 
 ## Project Overview
 
@@ -9,13 +9,13 @@ This is a **composite GitHub Action** that orchestrates [IronBee CLI](https://gi
 ## How It Works
 
 1. Installs `@ironbee-ai/cli` and `@anthropic-ai/claude-code` globally
-2. Runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config
-3. Sets up Playwright Chromium with GitHub Actions cache
-4. Enables recording enforcement so the agent must record browser sessions
+2. Writes `.ironbee/config.json` with the collector URL, per-mode DevTools enable flags, and per-mode MCP `LOG_FILE` paths under `.ironbee/artifacts/` so DevTools logs ship with the evidence (the IronBee API key is **never** written to disk — it is passed to `ironbee install` and `claude` as the `IRONBEE_API_KEY` env var, inherited by hooks and MCP subprocesses); `ironbee_extra_config` JSON is deep-merged on top so any IronBee CLI setting can be overridden without a dedicated input
+3. Runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config
+4. Sets up Playwright Chromium with GitHub Actions cache
 5. Builds a context-aware verification prompt:
    - **push/PR**: diff-based verification with `/ironbee-verify`
    - **manual/scheduled**: full application verification with `/ironbee-verify full`
-6. Runs Claude Code CLI with IronBee hooks + browser-devtools MCP
+6. Runs Claude Code CLI with IronBee hooks + IronBee DevTools MCP (`@ironbee-ai/devtools`)
 7. Collects evidence (screenshots, recordings, verdicts) and uploads as artifacts
 8. Posts a verification report comment on PRs
 9. On non-PR events (push, manual, scheduled), creates a fix PR if issues are found
@@ -40,13 +40,16 @@ LICENSE                   # MIT
 
 ## Action Inputs
 
-**Auth (one required):** `anthropic_api_key`, `claude_code_oauth_token`
+**IronBee (required):** `ironbee_api_key`
+**IronBee (optional):** `ironbee_collector_url`, `ironbee_console_url`, `ironbee_exclude_files`
+**IronBee DevTools toggles:** `ironbee_browser_devtools` (default `true`), `ironbee_backend_devtools`, `ironbee_node_devtools`
+**IronBee config escape hatch:** `ironbee_extra_config` (raw JSON, deep-merged into `.ironbee/config.json`)
+**Claude auth (one required):** `anthropic_api_key`, `claude_code_oauth_token`
 **GitHub:** `github_token`
 **Versions:** `ironbee_cli_version`, `claude_code_cli_version`
 **App:** `app_url`, `app_start_command`, `app_build_command`, `app_install_command`
 **Claude:** `prompt`, `model`, `max_turns`, `claude_args`
-**AWS (optional S3 upload):** `aws_iam_role`, `aws_region`, `aws_s3_bucket`
-**Options:** `exclude_ironbee_files`, `verbose`, `working_directory`
+**Options:** `verbose`, `working_directory`
 
 ## Action Outputs
 
@@ -62,8 +65,9 @@ LICENSE                   # MIT
 - IronBee hooks enforce verification flow (recording, screenshots, verdicts)
 - PR comments are created/updated (not duplicated) using GitHub API
 - Evidence uploaded via `actions/upload-artifact@v4` with 30-day retention
-- Optional S3 upload via AWS OIDC — enables inline screenshot rendering in PR comments
+- PR comment includes a session-level IronBee Console link (above the verdict badge) and a per-cycle verification link (`?activityId=…&verificationId=…`) under each cycle heading; host configurable via `ironbee_console_url`
 - User prompt passed via env var to prevent shell command substitution
+- IronBee API key never written to `.ironbee/config.json`; provided as `IRONBEE_API_KEY` env on the `ironbee install` and `claude` steps so hooks and MCP subprocesses inherit it
 - No heredocs in action.yml — all content written via echo/printf to avoid YAML parsing issues
 - Trigger-aware: adapts prompt and fix behavior based on event type
 - **NEVER update the `v1` tag** — it is published on GitHub Marketplace and used by external users. Use `v0` tag for development and testing
@@ -72,4 +76,4 @@ LICENSE                   # MIT
 
 - **ironbee-cli** (`@ironbee-ai/cli`): The CLI tool this action uses for verification hooks
 - **claude-code** (`@anthropic-ai/claude-code`): Claude Code CLI
-- **browser-devtools-mcp**: MCP server for browser automation via Playwright
+- **ironbee-devtools** (`@ironbee-ai/devtools`): MCP server for IronBee verification, with browser (Playwright), backend, and Node.js modes
