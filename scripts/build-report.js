@@ -2,14 +2,13 @@
 
 // Builds a markdown verification report from IronBee artifacts.
 //
-// Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]
+// Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [console-url] [session-id]
 //
 // Reads:
-//   - <artifacts-dir>/cycle-*/ directories for evidence files
 //   - <artifacts-dir>/sessions/<id>/actions.jsonl for verdict details
 //
-// When s3-base-url is provided, screenshots are rendered as inline images
-// and recordings as clickable links. Otherwise, file names are listed.
+// When console-url and session-id are provided, a link to the IronBee Console
+// is rendered under the report header.
 //
 // Outputs markdown to stdout.
 
@@ -17,31 +16,54 @@ const fs = require('fs');
 const path = require('path');
 
 function main() {
-  const [artifactsDir, ironbeeVersion, artifactUrl, s3BaseUrl] = process.argv.slice(2);
+  const [artifactsDir, ironbeeVersion, artifactUrl, consoleUrl, sessionIdArg] = process.argv.slice(2);
 
   if (!artifactsDir || !ironbeeVersion) {
-    console.error('Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [s3-base-url]');
+    console.error('Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [console-url] [session-id]');
     process.exit(1);
   }
 
-  const verdicts = parseVerdicts(artifactsDir);
-  const cycles = parseCycles(artifactsDir);
-  const matched = matchVerdictsWithCycles(verdicts, cycles);
-  const finalVerdict = getFinalVerdict(matched);
+  const cycles = parseVerdicts(artifactsDir);
+  const endReason = parseEndReason(artifactsDir);
+  const sessionId = sessionIdArg || endReason?.session_id || findAnySessionId(artifactsDir);
+  const finalStatus = cycles.length > 0 ? (cycles[cycles.length - 1].verdict.status || 'unknown') : 'unknown';
+  const host = consoleHost(consoleUrl);
 
   const lines = [];
 
   // Header
   lines.push('## <img src="https://ironbee.ai/favicon.png" width="24" height="24"> IronBee Verification Report');
   lines.push('');
-  lines.push(formatBadge(finalVerdict, matched.length));
+
+  // Session-level console link (above the verdict badge)
+  if (host && sessionId) {
+    lines.push(`🔗 **[View session in IronBee Console](https://${host}/sessions/${sessionId})**`);
+    lines.push('');
+  }
+
+  // Verdict badge
+  lines.push(formatBadge(finalStatus, cycles.length));
   lines.push('');
 
+  // Banner when the session ended abnormally (e.g., max_turns)
+  if (endReason && isAbnormalEnd(endReason)) {
+    lines.push(formatEndBanner(endReason));
+    lines.push('');
+  }
+
   // Each cycle
-  for (const cycle of matched) {
+  cycles.forEach((cycle, i) => {
     lines.push('---');
     lines.push('');
-    lines.push(formatCycle(cycle, s3BaseUrl));
+    lines.push(formatCycle(i + 1, cycle, host));
+    lines.push('');
+  });
+
+  // Collapsible session-end details — only when the session ended abnormally
+  if (endReason && isAbnormalEnd(endReason)) {
+    lines.push('---');
+    lines.push('');
+    lines.push(formatEndDetails(endReason));
     lines.push('');
   }
 
@@ -49,7 +71,7 @@ function main() {
   if (artifactUrl) {
     lines.push('---');
     lines.push('');
-    lines.push(`### \uD83D\uDCE6 [Download Verification Artifacts](${artifactUrl})`);
+    lines.push(`### 📦 [Download Verification Artifacts](${artifactUrl})`);
     lines.push('');
   }
 
@@ -61,11 +83,13 @@ function main() {
 }
 
 // Parse all verdicts from actions.jsonl files in session directories.
+// Each entry keeps its session/activity/verification IDs so per-cycle links
+// can be rendered.
 function parseVerdicts(artifactsDir) {
   const sessionsDir = path.join(artifactsDir, 'sessions');
-  const verdicts = [];
+  const cycles = [];
 
-  if (!fs.existsSync(sessionsDir)) return verdicts;
+  if (!fs.existsSync(sessionsDir)) return cycles;
 
   for (const sessionId of fs.readdirSync(sessionsDir)) {
     const actionsFile = path.join(sessionsDir, sessionId, 'actions.jsonl');
@@ -75,9 +99,13 @@ function parseVerdicts(artifactsDir) {
     for (const line of lines) {
       try {
         const event = JSON.parse(line);
-        // IronBee uses "verdict_write" as the event type
         if (event.type === 'verdict_write' && event.verdict) {
-          verdicts.push(event.verdict);
+          cycles.push({
+            sessionId,
+            activityId: event.activity_id,
+            verificationId: event.verification_id,
+            verdict: event.verdict,
+          });
         }
       } catch {
         // skip malformed lines
@@ -85,157 +113,148 @@ function parseVerdicts(artifactsDir) {
     }
   }
 
-  return verdicts;
+  return cycles;
 }
 
-// Parse cycle directories for evidence files.
-// Directories with the same cycle number (e.g. cycle-1-fail, cycle-1-pass) are
-// merged — their screenshots and recordings are combined into one cycle.
-function parseCycles(artifactsDir) {
-  if (!fs.existsSync(artifactsDir)) return [];
+// Normalize console URL into a bare hostname (strips scheme + trailing slashes).
+function consoleHost(consoleUrl) {
+  if (!consoleUrl) return '';
+  return consoleUrl.replace(/^https?:\/\//, '').replace(/\/+$/, '');
+}
 
-  const dirs = fs.readdirSync(artifactsDir)
-    .filter(d => d.startsWith('cycle-') && fs.statSync(path.join(artifactsDir, d)).isDirectory())
-    .sort();
+// Parse the final type:"result" event from claude-output.log.raw.
+// Returns the parsed event (with subtype, num_turns, errors, etc.) or null.
+function parseEndReason(artifactsDir) {
+  const logFile = path.join(artifactsDir, 'claude-output.log.raw');
+  if (!fs.existsSync(logFile)) return null;
+  const lines = fs.readFileSync(logFile, 'utf-8').split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    try {
+      const event = JSON.parse(line);
+      if (event.type === 'result') return event;
+    } catch {}
+  }
+  return null;
+}
 
-  const byNum = new Map();
-  for (const dir of dirs) {
-    const match = dir.match(/^cycle-(\d+)/);
-    if (!match) continue;
+// Last-resort session_id lookup: name of any subdirectory under sessions/.
+function findAnySessionId(artifactsDir) {
+  const sessionsDir = path.join(artifactsDir, 'sessions');
+  if (!fs.existsSync(sessionsDir)) return '';
+  const entries = fs.readdirSync(sessionsDir).filter((name) => {
+    try { return fs.statSync(path.join(sessionsDir, name)).isDirectory(); } catch { return false; }
+  });
+  return entries[0] || '';
+}
 
-    const num = parseInt(match[1], 10);
-    const cycleDir = path.join(artifactsDir, dir);
-    const screenshots = listFiles(path.join(cycleDir, 'screenshots')).map(f => ({ name: f, dir }));
-    const recordings = listFiles(path.join(cycleDir, 'recordings')).filter(f => f.endsWith('.webm')).map(f => ({ name: f, dir }));
+function isAbnormalEnd(end) {
+  return end.subtype && end.subtype !== 'success';
+}
 
-    if (byNum.has(num)) {
-      const existing = byNum.get(num);
-      existing.screenshots.push(...screenshots);
-      existing.recordings.push(...recordings);
-    } else {
-      byNum.set(num, { num, screenshots, recordings });
+// Human-readable label for the result.subtype field.
+function endReasonLabel(end) {
+  const subtype = end.subtype || 'unknown';
+  switch (subtype) {
+    case 'success': return 'Completed successfully';
+    case 'error_max_turns': return 'Reached max turns limit';
+    case 'error_during_execution': return 'Error during execution';
+    default: return subtype;
+  }
+}
+
+// One-line banner shown under the verdict badge when the session ended abnormally.
+function formatEndBanner(end) {
+  const label = endReasonLabel(end);
+  const turns = end.num_turns != null ? ` after ${end.num_turns} turn${end.num_turns === 1 ? '' : 's'}` : '';
+  return `> ⚠️ **Session ended early:** ${label}${turns}. Verification may be incomplete.`;
+}
+
+// Collapsible <details> block with full end-of-session diagnostics.
+function formatEndDetails(end) {
+  const lines = [];
+  lines.push('<details><summary>Session end details</summary>');
+  lines.push('');
+  lines.push(`- **Reason:** ${endReasonLabel(end)} (\`${end.subtype || 'unknown'}\`)`);
+  if (end.terminal_reason && end.terminal_reason !== end.subtype) {
+    lines.push(`- **Terminal reason:** \`${end.terminal_reason}\``);
+  }
+  if (end.num_turns != null) lines.push(`- **Turns:** ${end.num_turns}`);
+  if (typeof end.total_cost_usd === 'number') {
+    lines.push(`- **Cost:** $${end.total_cost_usd.toFixed(4)}`);
+  }
+  if (typeof end.duration_ms === 'number') {
+    lines.push(`- **Duration:** ${(end.duration_ms / 1000).toFixed(1)}s`);
+  }
+  if (Array.isArray(end.errors) && end.errors.length > 0) {
+    lines.push(`- **Errors:**`);
+    for (const e of end.errors) lines.push(`  - ${e}`);
+  }
+  if (Array.isArray(end.permission_denials) && end.permission_denials.length > 0) {
+    lines.push(`- **Blocked tool calls:** ${end.permission_denials.length}`);
+    for (const d of end.permission_denials.slice(0, 10)) {
+      const target = d.tool_input?.file_path
+        || (typeof d.tool_input?.command === 'string' ? d.tool_input.command.slice(0, 80) : '')
+        || d.tool_input?.url
+        || '';
+      lines.push(`  - \`${d.tool_name}\`${target ? ` — ${target}` : ''}`);
     }
   }
-
-  return Array.from(byNum.values()).sort((a, b) => a.num - b.num);
-}
-
-// List file names in a directory.
-function listFiles(dir) {
-  if (!fs.existsSync(dir)) return [];
-  return fs.readdirSync(dir).filter(f => {
-    const full = path.join(dir, f);
-    return fs.statSync(full).isFile();
-  });
-}
-
-// Match verdicts (from actions.jsonl) with cycle directories.
-// Verdicts are in order — cycle 1 gets verdict 1, etc.
-function matchVerdictsWithCycles(verdicts, cycles) {
-  return cycles.map((cycle, i) => ({
-    ...cycle,
-    verdict: verdicts[i]?.status || 'unknown',
-    details: verdicts[i] || null,
-  }));
-}
-
-// Determine the final verdict status.
-function getFinalVerdict(matched) {
-  if (matched.length === 0) return 'unknown';
-  const last = matched[matched.length - 1];
-  return last.verdict;
+  lines.push('');
+  lines.push('</details>');
+  return lines.join('\n');
 }
 
 // Format the top-level badge line.
-function formatBadge(verdict, cycleCount) {
-  const icon = verdict === 'pass' ? '\u2705' : verdict === 'fail' ? '\u274C' : '\u26A0\uFE0F';
-  const label = verdict.toUpperCase();
+function formatBadge(status, cycleCount) {
+  const icon = status === 'pass' ? '✅' : status === 'fail' ? '❌' : '⚠️';
+  const label = status.toUpperCase();
   const suffix = cycleCount > 1 ? ` (${cycleCount} cycles)` : '';
   return `${icon} **${label}**${suffix}`;
 }
 
 // Format a single verification cycle as markdown.
-function formatCycle(cycle, s3BaseUrl) {
+function formatCycle(num, cycle, host) {
   const lines = [];
-  const icon = cycle.verdict === 'pass' ? '\u2705' : cycle.verdict === 'fail' ? '\u274C' : '\u26A0\uFE0F';
+  const verdict = cycle.verdict;
+  const status = verdict.status || 'unknown';
+  const icon = status === 'pass' ? '✅' : status === 'fail' ? '❌' : '⚠️';
 
-  lines.push(`### Cycle ${cycle.num} \u2014 ${icon} ${cycle.verdict}`);
+  lines.push(`### Cycle ${num} — ${icon} ${status}`);
   lines.push('');
 
-  const d = cycle.details;
-
-  if (d) {
-    if (d.pages_tested && d.pages_tested.length > 0) {
-      lines.push('**Pages Tested:**');
-      for (const p of d.pages_tested) {
-        lines.push(`- ${p}`);
-      }
-      lines.push('');
-    }
-
-    if (d.checks && d.checks.length > 0) {
-      lines.push('**Checks:**');
-      for (const c of d.checks) {
-        lines.push(`- ${c}`);
-      }
-      lines.push('');
-    }
-
-    if (d.issues && d.issues.length > 0) {
-      lines.push('**Issues:**');
-      for (const issue of d.issues) {
-        lines.push(`- ${issue}`);
-      }
-      lines.push('');
-    }
-
-    if (d.fixes && d.fixes.length > 0) {
-      lines.push('**Fixes Applied:**');
-      for (const fix of d.fixes) {
-        lines.push(`- ${fix}`);
-      }
-      lines.push('');
-    }
+  // Per-verification console link
+  if (host && cycle.sessionId && cycle.verificationId) {
+    const params = new URLSearchParams();
+    if (cycle.activityId) params.set('activityId', cycle.activityId);
+    params.set('verificationId', cycle.verificationId);
+    const url = `https://${host}/sessions/${cycle.sessionId}?${params.toString()}`;
+    lines.push(`🔗 [View this verification in IronBee Console](${url})`);
+    lines.push('');
   }
 
-  // Evidence
-  if (cycle.screenshots.length > 0) {
-    if (s3BaseUrl) {
-      lines.push('**Screenshots:**');
-      lines.push('');
-      for (const s of cycle.screenshots) {
-        const url = `${s3BaseUrl}/${s.dir}/screenshots/${encodeURIComponent(s.name)}`;
-        lines.push(`<details><summary>${s.name}</summary>`);
-        lines.push('');
-        lines.push(`![${s.name}](${url})`);
-        lines.push('');
-        lines.push('</details>');
-        lines.push('');
-      }
-    } else {
-      lines.push(`**Screenshots:** ${cycle.screenshots.map(s => s.name).join(', ')}`);
+  if (verdict.checks && verdict.checks.length > 0) {
+    lines.push('**Checks:**');
+    for (const c of verdict.checks) {
+      lines.push(`- ${c}`);
     }
+    lines.push('');
   }
-  if (cycle.recordings.length > 0) {
-    if (s3BaseUrl) {
-      lines.push('**Recordings:**');
-      lines.push('');
-      for (const r of cycle.recordings) {
-        const videoUrl = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(r.name)}`;
-        const thumbName = r.name.replace(/\.webm$/, '-thumb.png');
-        const thumbUrl = `${s3BaseUrl}/${r.dir}/recordings/${encodeURIComponent(thumbName)}`;
-        lines.push(`<details><summary>\uD83C\uDFA5 ${r.name}</summary>`);
-        lines.push('');
-        lines.push(`[![${r.name}](${thumbUrl})](${videoUrl})`);
-        lines.push('');
-        lines.push('</details>');
-        lines.push('');
-      }
-    } else {
-      lines.push(`**Recordings:** ${cycle.recordings.map(r => r.name).join(', ')}`);
+
+  if (verdict.issues && verdict.issues.length > 0) {
+    lines.push('**Issues:**');
+    for (const issue of verdict.issues) {
+      lines.push(`- ${issue}`);
     }
+    lines.push('');
   }
-  if (!s3BaseUrl && (cycle.screenshots.length > 0 || cycle.recordings.length > 0)) {
+
+  if (verdict.fixes && verdict.fixes.length > 0) {
+    lines.push('**Fixes:**');
+    for (const fix of verdict.fixes) {
+      lines.push(`- ${fix}`);
+    }
     lines.push('');
   }
 

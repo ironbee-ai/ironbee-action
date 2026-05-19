@@ -1,6 +1,6 @@
 # IronBee Action
 
-GitHub Action for [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) — Verify and fix code changes using browser-based testing with Claude Code.
+GitHub Action for [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) — Verify and fix code changes using IronBee DevTools (browser, backend, and Node.js modes) with Claude Code.
 
 ## Demo
 
@@ -8,14 +8,14 @@ https://github.com/user-attachments/assets/4015258a-a6d5-45dd-8ddf-5d736d489436
 
 ## What It Does
 
-IronBee Action automatically verifies code changes in a real browser and fixes issues found. It orchestrates [Claude Code CLI](https://github.com/anthropics/claude-code) with [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) to:
+IronBee Action automatically verifies code changes via IronBee DevTools and fixes issues found. It orchestrates [Claude Code CLI](https://github.com/anthropics/claude-code) with [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) to:
 
 1. Review code changes (PR diff or push diff)
 2. Build and start your application
-3. Navigate to affected pages, take screenshots, test functionality
-4. Record browser sessions as evidence
+3. Drive verification through the enabled DevTools modes (browser by default, plus optional backend / Node.js)
+4. Record sessions and evidence to the IronBee collector
 5. Fix any issues found and re-verify
-6. Post a verification report on the PR with evidence artifacts
+6. Post a verification report on the PR with per-cycle Console links and downloadable evidence
 
 ## Quick Start
 
@@ -42,6 +42,7 @@ jobs:
 
       - uses: ironbee-ai/ironbee-action@v1
         with:
+          ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
@@ -104,7 +105,6 @@ The action requires these GitHub token permissions:
 | `contents: write` | Yes | Commit fixes to PR branches, create fix branches |
 | `pull-requests: write` | Yes | Post verification report comments on PRs, create fix PRs |
 | `issues: write` | Yes | Update PR comments via GitHub API |
-| `id-token: write` | Only with S3 | Required for AWS OIDC authentication when using S3 upload |
 
 ## Usage Examples
 
@@ -113,6 +113,7 @@ The action requires these GitHub token permissions:
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
   with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     app_build_command: 'npm run build'
     app_start_command: 'npm run dev'
@@ -124,6 +125,7 @@ The action requires these GitHub token permissions:
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
   with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     prompt: 'Focus on the checkout flow and payment form validation'
     max_turns: '30'
@@ -134,6 +136,7 @@ The action requires these GitHub token permissions:
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
   with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
@@ -144,30 +147,51 @@ By default, IronBee config files are committed to the repo so they can be used i
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
   with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    exclude_ironbee_files: 'true'
+    ironbee_exclude_files: 'true'
 ```
 
-### With S3 Upload (Inline Screenshots in PR Comments)
+### With Custom IronBee Console URL
 
-Upload evidence to a publicly readable S3 bucket for inline screenshot rendering in PR comments. Requires AWS OIDC configured with an IAM role.
+The PR comment includes a link to the IronBee Console for the verification session. Override the default host (`console.ironbee.ai`) if you self-host:
 
 ```yaml
-permissions:
-  contents: write
-  pull-requests: write
-  issues: write
-  id-token: write  # Required for AWS OIDC
+- uses: ironbee-ai/ironbee-action@v1
+  with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    ironbee_console_url: 'console.example.com'
+```
 
-steps:
-  - uses: actions/checkout@v4
+### Enable Additional DevTools Platforms
 
-  - uses: ironbee-ai/ironbee-action@v1
-    with:
-      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-      aws_iam_role: 'arn:aws:iam::123456789012:role/github-actions-s3'
-      aws_region: 'us-east-1'
-      aws_s3_bucket: 'my-verification-evidence'
+By default only the browser DevTools mode runs. Opt into backend or Node.js modes when you want IronBee to verify those layers too:
+
+```yaml
+- uses: ironbee-ai/ironbee-action@v1
+  with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    ironbee_browser_devtools: 'true'
+    ironbee_backend_devtools: 'true'
+    ironbee_node_devtools: 'false'
+```
+
+### Raw Config Overrides
+
+For any IronBee CLI setting not exposed as a dedicated input, pass a JSON object via `ironbee_extra_config`. It is deep-merged into the generated `.ironbee/config.json` and user keys win:
+
+```yaml
+- uses: ironbee-ai/ironbee-action@v1
+  with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    ironbee_extra_config: |
+      {
+        "verification": { "enable": true },
+        "browserDevTools": { "env": { "LOG_FILE": "/tmp/browser-devtools.log" } }
+      }
 ```
 
 ### Verbose Logging
@@ -175,6 +199,7 @@ steps:
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
   with:
+    ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
     verbose: 'true'
 ```
@@ -183,25 +208,39 @@ steps:
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
+| **IronBee — auth & collector** | | | |
+| `ironbee_api_key` | Yes | | IronBee API key used to authenticate the collector |
+| `ironbee_collector_url` | No | `https://collector.service.ironbee.ai` | IronBee collector endpoint URL |
+| **IronBee — Console report links** | | | |
+| `ironbee_console_url` | No | `console.ironbee.ai` | IronBee Console hostname (no scheme) for session links in the report |
+| **IronBee — DevTools modes** | | | |
+| `ironbee_browser_devtools` | No | `true` | Enable browser DevTools verification |
+| `ironbee_backend_devtools` | No | `false` | Enable backend DevTools verification |
+| `ironbee_node_devtools` | No | `false` | Enable Node.js DevTools verification |
+| **IronBee — raw config escape hatch** | | | |
+| `ironbee_extra_config` | No | | Raw IronBee config (JSON) deep-merged into `.ironbee/config.json`; user keys win |
+| **IronBee — CLI install / repo behavior** | | | |
+| `ironbee_cli_version` | No | `latest` | IronBee CLI version to install |
+| `ironbee_exclude_files` | No | `false` | Exclude IronBee config files from commits |
+| **Claude Code — auth** | | | |
 | `anthropic_api_key` | Yes* | | Anthropic API key for Claude Code |
 | `claude_code_oauth_token` | No* | | Claude Code OAuth token (alternative auth) |
-| `github_token` | No | `github.token` | GitHub token for PR operations |
-| `ironbee_cli_version` | No | `latest` | IronBee CLI version to install |
+| **Claude Code — install & runtime** | | | |
 | `claude_code_cli_version` | No | `latest` | Claude Code CLI version to install |
-| `app_url` | No | | Application URL for verification |
-| `app_start_command` | No | | Command to start the application |
-| `app_build_command` | No | | Command to build the application |
-| `app_install_command` | No | | Command to install dependencies |
-| `prompt` | No | | Additional instructions for the agent |
 | `model` | No | | Claude model override |
 | `max_turns` | No | `100` | Maximum conversation turns |
+| `prompt` | No | | Additional instructions for the agent |
 | `claude_args` | No | | Additional Claude Code CLI arguments |
-| `aws_iam_role` | No | | AWS IAM role ARN for S3 upload (enables inline images) |
-| `aws_region` | No | | AWS region for S3 upload |
-| `aws_s3_bucket` | No | | S3 bucket name (must be publicly readable) |
-| `exclude_ironbee_files` | No | `false` | Exclude IronBee config files from commits |
-| `verbose` | No | `false` | Enable verbose CI logging |
+| **Application under test** | | | |
+| `app_install_command` | No | | Command to install dependencies |
+| `app_build_command` | No | | Command to build the application |
+| `app_start_command` | No | | Command to start the application |
+| `app_url` | No | | Application URL for verification |
+| **GitHub** | | | |
+| `github_token` | No | `github.token` | GitHub token for PR operations |
+| **Action — general behavior** | | | |
 | `working_directory` | No | `.` | Working directory for verification |
+| `verbose` | No | `false` | Enable verbose CI logging |
 
 *One of `anthropic_api_key` or `claude_code_oauth_token` is required.
 
@@ -216,16 +255,16 @@ steps:
 
 ### Verification Flow
 
-1. **Setup** — Installs IronBee CLI, Claude Code CLI, and Playwright Chromium (cached across runs)
-2. **Configure** — Runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config
+1. **Setup** — Installs `@ironbee-ai/cli`, `@anthropic-ai/claude-code`, `@ironbee-ai/devtools`, and Playwright Chromium (cached across runs)
+2. **Configure** — Writes `.ironbee/config.json` with the collector URL, per-mode DevTools enable flags, and per-mode MCP `LOG_FILE` paths under `.ironbee/artifacts/` (deep-merging `ironbee_extra_config` on top), then runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config. The IronBee API key is passed via the `IRONBEE_API_KEY` env var (not written to disk) and inherited by hooks and MCP subprocesses
 3. **Verify** — Claude Code runs `/ironbee-verify` (or `/ironbee-verify full` for manual/scheduled) which:
    - Reviews the code diff (push/PR) or tests the full app (manual/scheduled)
    - Builds and starts the application
-   - Records browser sessions and takes screenshots
+   - Records sessions via the enabled DevTools modes and takes screenshots
    - Tests functionality and checks for errors
    - Submits a verdict (pass/fail)
 4. **Fix** — If verification fails, Claude Code fixes the issues and re-verifies
-5. **Report** — Posts a verification report on the PR with per-cycle breakdown and evidence
+5. **Report** — Posts a verification report on the PR with a session-level IronBee Console link, per-cycle verification links (`activityId` + `verificationId`), and a downloadable evidence artifact
 
 ### Fix Behavior
 
