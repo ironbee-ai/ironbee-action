@@ -164,3 +164,18 @@ test('action.yml: app_port declares no default', () => {
   assert.ok(INPUTS.has('app_port'));
   assert.equal(INPUTS.get('app_port'), '');
 });
+
+// Both outcome paths carry the same refusal, and they must keep carrying it.
+// The gate was added to the fix PR alone at first, which left a failing
+// re-verification pushing its fix onto someone else's branch — the more
+// intrusive of the two, guarded by the weaker rule.
+test('action.yml: neither outcome path ships a fix the re-verification rejected', () => {
+  for (const step of ['Commit the fixes to the pull request branch', 'Create fix PR']) {
+    const start = ACTION.indexOf(`- name: ${step}`);
+    assert.notEqual(start, -1, `${step} not found`);
+    const condition = ACTION.slice(start, ACTION.indexOf('shell:', start));
+
+    assert.match(condition, /job-reverified\.outputs\.verdict != 'fail'/, step);
+    assert.match(condition, /verdict\.outputs\.status != 'fail'/, step);
+  }
+});

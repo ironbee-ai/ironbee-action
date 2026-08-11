@@ -1215,11 +1215,20 @@ runs:
     #
     # `actions/checkout` leaves a pull_request run on a detached merge commit
     # that belongs to no branch, so the push names the head ref explicitly.
+    #
+    # A fix the re-verification rejected is not pushed, the same rule the fix PR
+    # follows and for a stronger reason: this branch belongs to whoever opened
+    # the pull request, and putting an unverified commit on it is more intrusive
+    # than opening a pull request they can ignore. Only `fail` blocks — an empty
+    # verdict means no re-verification ran and `unknown` means one ran without
+    # concluding, and neither is evidence against the fix.
     - name: Commit the fixes to the pull request branch
       if: >-
         always() && steps.plan.outputs.mode != '' &&
         github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.fork != true
+        github.event.pull_request.head.repo.fork != true &&
+        steps.job-reverified.outputs.verdict != 'fail' &&
+        steps.verdict.outputs.status != 'fail'
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
