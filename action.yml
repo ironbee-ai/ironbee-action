@@ -137,6 +137,21 @@ inputs:
     description: 'Additional instructions for the verification agent. Reaches whichever engine runs.'
     required: false
     default: ''
+  verification_auto:
+    description: >-
+      One of: true, false. Off means only a run somebody asked for by name — a
+      comment command or a manual dispatch — verifies anything; a push or a pull
+      request does nothing. It cannot save the workflow's own steps before this
+      action (checkout, builds, installs); a job-level `if:` is what does that.
+    required: false
+    default: 'true'
+  verification_command:
+    description: >-
+      The comment command that starts a run on an `issue_comment` event, as
+      `<command> [--fix] [<prompt>]`. Only read on that event; the workflow
+      decides who may use it.
+    required: false
+    default: '/ironbee-verify'
   verification_apply_fix:
     description: >-
       One of: true, false. Apply fixes for the issues a failing verification
@@ -269,6 +284,88 @@ runs:
       with:
         node-version: '20'
 
+    # ── The comment command ────────────────────────────────────────────
+    #
+    # WHO may run it is the workflow's decision, not this action's: an
+    # `issue_comment` event fires for anyone who can leave a comment and runs in
+    # the base repository WITH its secrets, so the author check has to happen in
+    # the `if:` that decides whether this job starts at all. By the time these
+    # steps run, that has been settled. What is left is WHAT was asked for.
+    #
+    # The body reaches the parser as an environment variable and never as part
+    # of a `run:` line — it is text a stranger wrote, and an interpolated
+    # `${{ github.event.comment.body }}` is a shell injection with this job's
+    # credentials.
+    - name: Read the comment command
+      id: command
+      if: github.event_name == 'issue_comment'
+      shell: bash
+      env:
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        COMMAND_NAME: ${{ inputs.verification_command }}
+      run: node "${{ github.action_path }}/scripts/parse-command.js"
+
+    # A typed `--` says the author meant an option, so a misspelt one is
+    # answered rather than quietly read as prose. The reply is the whole
+    # outcome: the run stops here, and stops green — a red X for a typo in a
+    # comment would report that the workflow broke.
+    - name: Answer a malformed command
+      if: github.event_name == 'issue_comment' && steps.command.outputs.error != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        ERROR: ${{ steps.command.outputs.error }}
+      run: |
+        printf '%s\n' "$ERROR" > .ironbee-command-error.txt
+        gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+          -F "body=@.ironbee-command-error.txt" >/dev/null
+        rm -f .ironbee-command-error.txt
+        echo "::error::$ERROR"
+        exit 1
+
+    # Acknowledged on the comment itself rather than only in a reply: an
+    # `issue_comment` run does not appear in the pull request's checks, so
+    # without this the author has nothing to tell "it started" from "nothing
+    # listened". The reaction is replaced by the outcome one at the end.
+    - name: Acknowledge the command
+      if: github.event_name == 'issue_comment' && steps.command.outputs.ok == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+          -f content=eyes >/dev/null
+
+    # The pull request a comment names is not on the event: `issue_comment`
+    # carries an issue, and a pull request's head repository has to be read back.
+    # It decides one thing here — whether this is a fork — and the plan refuses
+    # the run if it is. A comment run holds this repository's secrets, so
+    # building and starting a fork's code under it hands them to whoever opened
+    # the pull request.
+    - name: Resolve the pull request behind the comment
+      id: comment-pr
+      if: github.event_name == 'issue_comment' && steps.command.outputs.ok == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+      run: |
+        PR_JSON="$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}")"
+        HEAD_REPO="$(printf '%s' "$PR_JSON" | jq -r '.head.repo.full_name')"
+        if [ "$HEAD_REPO" != "${{ github.repository }}" ]; then
+          echo "is_fork=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "is_fork=false" >> "$GITHUB_OUTPUT"
+        fi
+        # The branch a fix lands on and the base a local run diffs against —
+        # both on the pull request, neither on the comment's own event.
+        {
+          printf 'head_ref=%s\n' "$(printf '%s' "$PR_JSON" | jq -r '.head.ref')"
+          printf 'base_ref=%s\n' "$(printf '%s' "$PR_JSON" | jq -r '.base.ref')"
+          printf 'title=%s\n' "$(printf '%s' "$PR_JSON" | jq -r '.title' | tr -d '\n\r')"
+        } >> "$GITHUB_OUTPUT"
+
+
     # ── Decide what runs, and where ────────────────────────────────────
     #
     # Every decision the action makes lives in one script so it can be tested:
@@ -296,6 +393,7 @@ runs:
         INPUT_IRONBEE_COLLECTOR_URL: ${{ inputs.ironbee_collector_url }}
         INPUT_IRONBEE_BIND_REPOSITORY: ${{ inputs.ironbee_bind_repository }}
         INPUT_IRONBEE_JOB_TIMEOUT_MINUTES: ${{ inputs.ironbee_job_timeout_minutes }}
+        INPUT_VERIFICATION_AUTO: ${{ inputs.verification_auto }}
         INPUT_VERIFICATION_APPLY_FIX: ${{ inputs.verification_apply_fix }}
         INPUT_CLAUDE_CODE_MODEL: ${{ inputs.claude_code_model }}
         INPUT_CLAUDE_CODE_MAX_TURNS: ${{ inputs.claude_code_max_turns }}
@@ -309,9 +407,13 @@ runs:
         INPUT_IRONBEE_EXTRA_CONFIG: ${{ inputs.ironbee_extra_config }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
         REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
-        IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        # The pull_request event carries the answer; a comment event does not,
+        # so the step above reads it back and both arrive here as one flag.
+        IS_FORK: ${{ github.event_name == 'issue_comment' && steps.comment-pr.outputs.is_fork || github.event.pull_request.head.repo.fork }}
+        COMMAND_FIX: ${{ steps.command.outputs.fix }}
         EVENT_NAME: ${{ github.event_name }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        # A comment's pull request is an issue number on its own event.
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         COMMIT_SHA: ${{ github.sha }}
         BEFORE_SHA: ${{ github.event.before }}
       working-directory: ${{ inputs.working_directory }}
@@ -387,6 +489,7 @@ runs:
 
     # ── Install IronBee CLI ────────────────────────────────────────────
     - name: Install IronBee CLI
+      if: steps.plan.outputs.mode != ''
       shell: bash
       run: |
         # Resolve "latest" via `npm view` so the install pins to an explicit
@@ -548,7 +651,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
-        USER_PROMPT: ${{ inputs.verification_prompt }}
+        USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
       run: |
         ARTIFACTS_DIR="$(pwd)/.ironbee/artifacts"
 
@@ -557,6 +660,9 @@ runs:
         if [ "${{ github.event_name }}" = "pull_request" ]; then
           CONTEXT="Pull Request #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
           DIFF_TARGET="origin/${{ github.event.pull_request.base.ref }}"
+        elif [ "${{ github.event_name }}" = "issue_comment" ]; then
+          CONTEXT="Pull Request #${{ github.event.issue.number }}: ${{ steps.comment-pr.outputs.title }}"
+          DIFF_TARGET="origin/${{ steps.comment-pr.outputs.base_ref }}"
         elif [ "${{ github.event_name }}" = "push" ]; then
           CONTEXT="Push to ${{ github.ref_name }} (commit ${{ github.sha }})"
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
@@ -659,6 +765,7 @@ runs:
 
     # ── Configure git identity ────────────────────────────────────────
     - name: Configure git identity
+      if: steps.plan.outputs.mode != ''
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
@@ -728,7 +835,7 @@ runs:
       env:
         IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
         API_URL_OVERRIDE: ${{ inputs.ironbee_api_url }}
-        USER_PROMPT: ${{ inputs.verification_prompt }}
+        USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
         CLI_ARGS: ${{ steps.plan.outputs.cli_args }}
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
       run: |
@@ -951,7 +1058,7 @@ runs:
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
         APP_START_COMMAND: ${{ inputs.app_start_command }}
         APP_RESTART_COMMAND: ${{ inputs.app_restart_command }}
-        USER_PROMPT: ${{ inputs.verification_prompt }}
+        USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
       run: |
         if [ -n "$API_URL_OVERRIDE" ]; then
           export IRONBEE_API_URL="$API_URL_OVERRIDE"
@@ -1189,12 +1296,14 @@ runs:
         cat "$BODY_FILE" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Post the report on the pull request
-      if: always() && github.event_name == 'pull_request' && steps.report.outputs.body_file != ''
+      if: >-
+        always() && steps.report.outputs.body_file != '' &&
+        (github.event_name == 'pull_request' || github.event_name == 'issue_comment')
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         BODY_FILE: ${{ steps.report.outputs.body_file }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       run: |
         # Updated in place rather than appended to: a PR that is pushed to
         # repeatedly would otherwise collect one comment per run.
@@ -1227,14 +1336,15 @@ runs:
     - name: Commit the fixes to the pull request branch
       if: >-
         always() && steps.plan.outputs.mode != '' &&
-        github.event_name == 'pull_request' &&
+        (github.event_name == 'pull_request' || github.event_name == 'issue_comment') &&
         github.event.pull_request.head.repo.fork != true &&
+        steps.comment-pr.outputs.is_fork != 'true' &&
         steps.job-reverified.outputs.verdict != 'fail' &&
         steps.verdict.outputs.status != 'fail'
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
-        HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        HEAD_REF: ${{ github.event.pull_request.head.ref || steps.comment-pr.outputs.head_ref }}
       run: |
         git add -A
         # Always unstaged: this action's own working files. The rest only when
@@ -1275,7 +1385,7 @@ runs:
     - name: Create fix PR
       if: >-
         always() && steps.plan.outputs.mode != '' &&
-        github.event_name != 'pull_request' &&
+        github.event_name != 'pull_request' && github.event_name != 'issue_comment' &&
         steps.job-reverified.outputs.verdict != 'fail' &&
         steps.verdict.outputs.status != 'fail'
       shell: bash
@@ -1371,6 +1481,36 @@ runs:
           ${{ inputs.working_directory }}/.ironbee/artifacts/app-service-logs.txt
         if-no-files-found: ignore
         retention-days: 30
+
+    # Replaces the "started" reaction with the outcome, so the comment carries
+    # the answer at a glance. Before the gate rather than after it: the gate is
+    # the step that fails the job, and anything below it would not run.
+    - name: React with the outcome
+      if: always() && github.event_name == 'issue_comment' && steps.command.outputs.ok == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
+        VERDICT: ${{ steps.job-reverified.outputs.verdict || steps.job.outputs.verdict || steps.verdict.outputs.status }}
+      run: |
+        # A pass is the only +1. `not_applicable`, a missing verdict and an
+        # error all land on -1 for the same reason the gate treats them alike:
+        # "not a fail" is not the same as verified.
+        if [ "$VERDICT" = "pass" ]; then
+          CONTENT="+1"
+        else
+          CONTENT="-1"
+        fi
+        gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+          -f content="$CONTENT" >/dev/null
+        # The eyes reaction said "running"; leaving it would say so forever.
+        EYES=$(gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+          --jq '.[] | select(.content == "eyes") | .id' | head -1)
+        if [ -n "$EYES" ]; then
+          gh api -X DELETE \
+            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions/$EYES" \
+            >/dev/null || true
+        fi
 
     # ── The gate ───────────────────────────────────────────────────────
     #

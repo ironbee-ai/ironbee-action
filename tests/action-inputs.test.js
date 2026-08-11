@@ -179,3 +179,56 @@ test('action.yml: neither outcome path ships a fix the re-verification rejected'
     assert.match(condition, /verdict\.outputs\.status != 'fail'/, step);
   }
 });
+
+// ─── The comment command ─────────────────────────────────────────────────────
+
+// The one line in this file that would be a remote code execution. A comment
+// body is text a stranger wrote, and `${{ github.event.comment.body }}` inside
+// a `run:` is that text pasted into a shell holding this job's credentials —
+// so it may appear as an `env:` value and nowhere else.
+test('action.yml: the comment body reaches the parser as an environment value only', () => {
+  // Comment lines excluded: this rule is stated in one of them, right above
+  // the step it governs.
+  const uses = ACTION.split('\n')
+    .filter((line) => line.includes('github.event.comment.body') && !line.trim().startsWith('#'));
+
+  assert.equal(uses.length, 1);
+  assert.match(uses[0], /^\s*COMMENT_BODY:\s/);
+});
+
+// The routing rule for a comment run: it IS a pull request run. Its fixes
+// belong on the branch under review, and a second pull request against that
+// branch is noise nobody asked for.
+test('action.yml: a comment run lands its fixes on the branch, never in a new pull request', () => {
+  const commit = ACTION.slice(ACTION.indexOf('- name: Commit the fixes to the pull request branch'));
+  assert.match(commit.slice(0, commit.indexOf('shell:')), /github\.event_name == 'issue_comment'/);
+
+  const create = ACTION.slice(ACTION.indexOf('- name: Create fix PR'));
+  assert.match(create.slice(0, create.indexOf('shell:')), /github\.event_name != 'issue_comment'/);
+});
+
+// A comment event carries an issue, not a pull request, so every place that
+// reads the number needs both — and a half-converted one binds the run to
+// nothing while looking configured.
+test('action.yml: every PR_NUMBER falls back to the comment\'s issue', () => {
+  // `PR_NUMBER:` only. The local-mode prompt names the number too, but inside
+  // an `if` branch that a comment run never reaches — it has its own.
+  const uses = ACTION.split('\n').filter((line) => line.trim().startsWith('PR_NUMBER:'));
+
+  assert.ok(uses.length > 0);
+  for (const line of uses) {
+    assert.match(line, /github\.event\.issue\.number/, line.trim());
+  }
+});
+
+// The command's own prompt has to win: a repository that configures a standing
+// `verification_prompt` would otherwise silently verify that instead of what
+// the comment asked for.
+test('action.yml: the command\'s prompt takes precedence over the configured one', () => {
+  const uses = ACTION.split('\n').filter((line) => line.includes('USER_PROMPT:'));
+
+  assert.ok(uses.length >= 3);
+  for (const line of uses) {
+    assert.match(line, /steps\.command\.outputs\.prompt \|\| inputs\.verification_prompt/, line.trim());
+  }
+});

@@ -255,6 +255,23 @@ test('binding: a pull request binds by number', () => {
   );
 });
 
+// The comment's own event carries no commit, and `github.sha` on it points at
+// the default branch rather than at anything under review — so the number is
+// the only honest binding, and it is the same one the pull request itself uses.
+test('binding: a comment binds to the pull request it was left on', () => {
+  assert.deepEqual(
+    resolveRepoBinding({ eventName: 'issue_comment', prNumber: '42', sha: 'a'.repeat(40) }),
+    ['--pr', '42'],
+  );
+});
+
+test('binding: a comment with no pull request number falls back rather than guessing', () => {
+  assert.deepEqual(
+    resolveRepoBinding({ eventName: 'issue_comment', prNumber: '', sha: 'a'.repeat(40), parentSha: 'c'.repeat(40) }),
+    ['--commit', 'a'.repeat(40), '--base', 'c'.repeat(40)],
+  );
+});
+
 test('binding: a push with a usable base measures from it', () => {
   assert.deepEqual(
     resolveRepoBinding({
@@ -606,6 +623,50 @@ test('plan: fix disabled turns the fix round off', () => {
   assert.equal(plan.canFix, false);
 });
 
+// ─── The comment command's fix ───────────────────────────────────────────────
+//
+// Two rules, and they compose in one direction only: the command has to ask,
+// and the setting has to allow. A comment can decline a fix the repository
+// permits; it cannot permit one the repository declined.
+
+function comment(overrides) {
+  return input({ eventName: 'issue_comment', anthropicApiKey: 'sk-ant', ...overrides });
+}
+
+test('plan: a comment without --fix verifies only, whatever the setting says', () => {
+  assert.equal(resolvePlan(comment({ fix: 'true', commandFix: '' })).canFix, false);
+});
+
+test('plan: a comment with --fix fixes when the setting allows it', () => {
+  assert.equal(resolvePlan(comment({ fix: 'true', commandFix: 'true' })).canFix, true);
+});
+
+// The ceiling. A repository that switched fixing off decided something about
+// commits landing on its branches, and a comment is not where that is reversed.
+test('plan: --fix cannot turn fixing on where the repository switched it off', () => {
+  const plan = resolvePlan(comment({ fix: 'false', commandFix: 'true' }));
+
+  assert.equal(plan.canFix, false);
+  assert.equal(plan.ok, true);
+  assert.match(plan.warnings.join(' '), /switched off for this repository/);
+});
+
+// Silence would leave the author waiting for commits that are never coming.
+test('plan: a repository-permitted fix says nothing about a ceiling', () => {
+  const plan = resolvePlan(comment({ fix: 'true', commandFix: 'true' }));
+  assert.doesNotMatch(plan.warnings.join(' '), /switched off/);
+});
+
+// A comment run holds the base repository's secrets, so this is the one refusal
+// whose reason differs from the `pull_request` one — and saying the wrong one
+// would tell an operator the opposite of what is true.
+test('plan: a comment on a fork pull request is refused for holding secrets', () => {
+  const plan = resolvePlan(comment({ isFork: 'true' }));
+
+  assert.equal(plan.ok, false);
+  assert.match(plan.errors.join(' '), /holds this repository's secrets/);
+});
+
 // ─── The budget floor ────────────────────────────────────────────────────────
 
 test('floor: the default job timeout produces a floor above the queue wait', () => {
@@ -857,4 +918,48 @@ test('binding: an empty base with no parent declares no changeset', () => {
     }),
     ['--commit', 'a'.repeat(40), '--no-diff'],
   );
+});
+
+// ─── verification_auto ───────────────────────────────────────────────────────
+//
+// Off means "verify only when somebody asks". What it cannot mean is "do not
+// start": the caller's own steps have run before this action's first one, which
+// is why the input is a convenience and the job-level `if:` is the saving.
+
+test('plan: auto off skips a push, with no error and no mode', () => {
+  const plan = resolvePlan(input({ eventName: 'push', auto: 'false' }));
+
+  assert.equal(plan.skipped, true);
+  assert.equal(plan.ok, true);
+  assert.equal(plan.mode, null);
+  assert.deepEqual(plan.errors, []);
+});
+
+test('plan: auto off skips a pull request too', () => {
+  assert.equal(resolvePlan(input({ eventName: 'pull_request', auto: 'false' })).skipped, true);
+});
+
+// The two a person asked for by name. A comment carries the command itself, and
+// a dispatch is somebody pressing a button — neither is "automatic".
+test('plan: auto off still runs a comment command and a manual dispatch', () => {
+  for (const eventName of ['issue_comment', 'workflow_dispatch']) {
+    const plan = resolvePlan(input({ eventName, auto: 'false' }));
+    assert.notEqual(plan.skipped, true, eventName);
+    assert.equal(plan.mode, 'platform', eventName);
+  }
+});
+
+test('plan: auto on is the default and changes nothing', () => {
+  assert.notEqual(resolvePlan(input({ eventName: 'push' })).skipped, true);
+});
+
+// A run that is not going to happen must not also complain about how it was
+// configured: the skip is decided before any credential is required, so a
+// repository that switched verification off does not get a red run telling it
+// the key it deliberately never set is missing.
+test('plan: a skipped run reports no configuration errors', () => {
+  const plan = resolvePlan(input({ eventName: 'push', auto: 'false', ironbeeApiKey: '', appUrl: '' }));
+
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.errors, []);
 });

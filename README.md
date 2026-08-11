@@ -76,6 +76,7 @@ The action adapts its behavior based on the trigger event:
 | `push` (main/master) | Diff-based — verifies changed pages | Creates fix PR automatically if issues found |
 | `workflow_dispatch` | Full — verifies entire application | Creates fix PR automatically if issues found |
 | `schedule` | Full — verifies entire application | Creates fix PR automatically if issues found |
+| `issue_comment` | Diff-based — verifies the pull request the comment is on (never switched off by `verification_auto`) | Commits fixes to the PR branch **only when the comment asks**, posts the report comment |
 
 ### PR Verification
 
@@ -107,6 +108,119 @@ on:
 
 Runs a full application verification on a schedule. No diff — tests the entire application. Creates a fix PR if issues are found.
 
+### On Demand, From a Comment
+
+```yaml
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ironbee-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # WHO may run it is decided here, not by the action. An `issue_comment`
+    # event fires for anyone who can leave a comment and runs in the BASE
+    # repository with its secrets — so this condition is the security boundary.
+    if: >-
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      startsWith(github.event.comment.body, '/ironbee-verify')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # `issue_comment` runs on the DEFAULT branch and `github.sha` points there,
+      # not at the pull request — the head has to be checked out explicitly.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+          fetch-depth: 0
+      - uses: ironbee-ai/ironbee-action@v0
+        with:
+          ...
+```
+
+Then, on any pull request:
+
+```
+/ironbee-verify
+/ironbee-verify --fix
+/ironbee-verify check the coupon flow end to end
+/ironbee-verify --fix the totals are wrong when a coupon is applied
+```
+
+Options are marked with `--`, so scanning stops at the first token that is not
+one and everything after it is the instruction for the agent. That is what makes
+`/ironbee-verify fix the cart total` a prompt rather than a run that commits: a
+bare `fix` is an ordinary English verb, and reading it as a flag would apply
+changes nobody asked for. A multi-line comment works too — the whole body below
+the command line is the prompt.
+
+The command must be the first non-quoted line of the comment, so a comment that
+merely discusses it, or a reply that quotes it, starts nothing.
+
+`--fix` is opt-in per comment and bounded by `verification_apply_fix`: a
+repository that switched fixing off cannot have it switched back on from a
+comment. Unknown options are answered with a usage reply rather than read as
+prose, and that run ends red — a composite action cannot stop halfway, so the
+alternative would be verifying something other than what was asked for.
+
+The comment gets an 👀 reaction when the run starts and 👍 / 👎 when it ends —
+an `issue_comment` run does not appear in the pull request's checks, so without
+them there is nothing to tell "it started" from "nothing listened".
+
+**Fork pull requests are refused on this event**, and for the opposite reason to
+the usual one: a comment run holds the base repository's secrets, so building
+and starting a fork's code under it would hand them to whoever opened it.
+
+### Turning Automatic Verification Off
+
+To have **only** the comment command (and a manual dispatch) verify anything,
+while a push or a pull request does nothing. There are two ways, and they cost
+different things.
+
+**In your workflow's `if:` — nothing runs at all.** GitHub evaluates this before
+a runner is assigned, so the job is skipped outright: no runner minutes, no
+checkout, no builds.
+
+```yaml
+jobs:
+  verify:
+    if: >-
+      (github.event_name != 'issue_comment' && vars.IRONBEE_VERIFICATION_AUTO != 'false') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+       startsWith(github.event.comment.body, '/ironbee-verify'))
+```
+
+**Or hand it to the action — one line, and it decides.**
+
+```yaml
+      - uses: ironbee-ai/ironbee-action@v0
+        with:
+          verification_auto: ${{ vars.IRONBEE_VERIFICATION_AUTO }}   # 'false' switches it off
+```
+
+The action's first real step resolves to "nothing to do", every step after it is
+skipped, and the job ends green in seconds — no verification, no job charged
+against your quota, no gate.
+
+**What the input cannot do is give back the steps that ran before it.** An action
+is a step: by the time its first line executes, your checkout, image builds and
+dependency installs have already happened, and nothing inside a step can reach
+back before itself. In a workflow that builds Docker images that is most of the
+run's cost. So: the input is the convenient one, the `if:` is the one that
+actually saves the time. Use the `if:` when the job does expensive setup, the
+input when it does not — or both, since the input is harmless once the `if:` is
+there.
+
+Neither switches off a run somebody asked for **by name**: a comment command and
+a `workflow_dispatch` still verify. "Automatic" describes a push and a pull
+request, not a person pressing a button.
+
 ### Manual Verification
 
 ```yaml
@@ -124,7 +238,7 @@ The action requires these GitHub token permissions:
 |------------|----------|---------|
 | `contents: write` | Yes | Commit fixes to PR branches, create fix branches |
 | `pull-requests: write` | Yes | Post verification report comments on PRs, create fix PRs |
-| `issues: write` | Yes | Update PR comments via GitHub API |
+| `issues: write` | Yes | Update PR comments, and add reactions on a comment-triggered run |
 
 A pull request from a **fork** receives no secrets, so neither verification mode
 can run there. The action detects it and says so rather than failing on an empty
