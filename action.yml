@@ -1373,24 +1373,7 @@ runs:
       env:
         MODE: ${{ steps.plan.outputs.mode }}
         PLATFORM_CODE: ${{ steps.platform-reverify.outputs.exit_code || steps.platform-verify.outputs.exit_code }}
+        PLATFORM_VERDICT: ${{ steps.job-reverified.outputs.verdict || steps.job.outputs.verdict }}
         LOCAL_VERDICT: ${{ steps.verdict.outputs.status }}
       run: |
-        if [ "$MODE" = "platform" ]; then
-          if [ -z "$PLATFORM_CODE" ]; then
-            echo "::error::the verification did not run"
-            exit 1
-          fi
-          if [ "$PLATFORM_CODE" != "0" ]; then
-            echo "::error::verification did not pass (exit ${PLATFORM_CODE})"
-          fi
-          exit "$PLATFORM_CODE"
-        fi
-
-        # Local mode reads the verdict the agent wrote. `unknown` fails too: a
-        # run that produced no verdict verified nothing, and treating "not fail"
-        # as green turns an unverified change into a passing one.
-        if [ "$LOCAL_VERDICT" = "pass" ]; then
-          exit 0
-        fi
-        echo "::error::verification did not pass (verdict: ${LOCAL_VERDICT:-none})"
-        exit 1
+        node "${{ github.action_path }}/scripts/gate.js"
