@@ -228,10 +228,11 @@ inputs:
     default: '.'
   verbose:
     description: >-
-      One of: true, false. Log tool arguments and responses, the prompt, the
-      artifact list and verdict details. The name of each tool call is logged
-      either way — a run that printed nothing for minutes would be
-      indistinguishable from a hung one.
+      One of: true, false. Log each tool call the agent makes with its
+      arguments, the tool responses, the prompt, the artifact list and verdict
+      details. Off, the log carries what the agent says and how the run ended,
+      which is what a reader wants; a tool call every second is progress, not
+      information.
     required: false
     default: 'false'
 
@@ -825,7 +826,7 @@ runs:
             if .type == "assistant" and .message.content then
               (.message.content[] |
                 if .type == "text" then "🤖 " + .text
-                elif .type == "tool_use" then "🔧 " + .name + (if $verbose == "true" then ": " + (.input | tostring | .[0:500]) else "" end)
+                elif .type == "tool_use" then (if $verbose == "true" then "🔧 " + .name + ": " + (.input | tostring | .[0:500]) else empty end)
                 else empty end)
             elif .type == "user" and .message.content then
               (.message.content[] |
@@ -897,11 +898,11 @@ runs:
           --max-turns 60 \
           --dangerously-skip-permissions \
           --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
-          2>&1 | tee .ironbee/claude-fix.log.raw | jq -r --unbuffered '
+          2>&1 | tee .ironbee/claude-fix.log.raw | jq -r --unbuffered --arg verbose "${{ steps.plan.outputs.verbose }}" '
             if .type == "assistant" and .message.content then
               (.message.content[] |
                 if .type == "text" then "🤖 " + .text
-                elif .type == "tool_use" then "🔧 " + .name
+                elif .type == "tool_use" then (if $verbose == "true" then "🔧 " + .name else empty end)
                 else empty end)
             elif .type == "result" then
               "✅ Fix round done (cost: $" + (.total_cost_usd // 0 | tostring) + ")"
@@ -1171,6 +1172,7 @@ runs:
             --version "${{ steps.install-cli.outputs.ironbee-version }}" \
             --console "${{ steps.plan.outputs.console_url }}" \
             --job-url "${{ steps.job-reverified.outputs.job_url || steps.job.outputs.job_url }}" \
+            --earlier-job-url "${{ steps.job-reverified.outputs.job_url && steps.job.outputs.job_url || '' }}" \
             --failure-code "${{ steps.job.outputs.failure_code }}" \
             > "$BODY_FILE"
         else

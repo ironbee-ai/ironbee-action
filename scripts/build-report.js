@@ -9,7 +9,8 @@
 // product rather than as two tools that happen to comment on the same PR.
 //
 // Local:    node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [console-url] [session-id]
-// Platform: node build-report.js --job <path> --version <v> [--console <url>] [--job-url <url>]
+// Platform: node build-report.js --job <path> --version <v> [--console <url>]
+//   [--job-url <url>] [--earlier-job-url <url>]
 //                                [--failure-code <c>] [--failure-message <m>]
 //
 // Outputs markdown to stdout.
@@ -27,6 +28,7 @@ function main() {
       ironbeeVersion: flag(argv, '--version') || 'unknown',
       consoleUrl: flag(argv, '--console'),
       jobUrl: flag(argv, '--job-url'),
+      earlierJobUrl: flag(argv, '--earlier-job-url'),
       failureCode: flag(argv, '--failure-code'),
       failureMessage: flag(argv, '--failure-message'),
     }));
@@ -132,6 +134,14 @@ function buildPlatformReport(job, options) {
   const link = opts.jobUrl || (host && job && job.attempt ? `https://${host}/sessions/${job.attempt}` : '');
   if (link) {
     lines.push(`🔗 **[View session in IronBee Console](${link})**`);
+    // A fix round runs a second verification, and the badge above belongs to
+    // that one — so linking only it drops the session that found the issues in
+    // the first place. That is the session with the evidence: the failing
+    // checks, the screenshots, the traces. The one linked above shows an
+    // application that works.
+    if (opts.earlierJobUrl && opts.earlierJobUrl !== link) {
+      lines.push(`↳ the verification before the fix: [session](${opts.earlierJobUrl})`);
+    }
     lines.push('');
   }
 

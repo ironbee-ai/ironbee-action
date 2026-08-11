@@ -186,3 +186,39 @@ test('the repair reaches the rendered report', () => {
 
   assert.match(report, /\*\*Found\*\*\n- the total is wrong/);
 });
+
+// A fix round runs a second verification and the badge belongs to that one, so
+// linking only it drops the session that found the issues — the one carrying
+// the failing checks, the screenshots and the traces.
+test('both sessions are linked when a fix round ran', () => {
+  const report = buildPlatformReport(job({ result: { status: 'pass', checks: ['the order completes'] } }), {
+    ...OPTIONS,
+    jobUrl: 'https://console.example/sessions/second',
+    earlierJobUrl: 'https://console.example/sessions/first',
+  });
+
+  assert.match(report, /\(https:\/\/console\.example\/sessions\/second\)/);
+  assert.match(report, /the verification before the fix.*sessions\/first/);
+});
+
+test('a run with no fix round links one session and says nothing more', () => {
+  const report = buildPlatformReport(job({ result: { status: 'pass', checks: ['the order completes'] } }), {
+    ...OPTIONS,
+    jobUrl: 'https://console.example/sessions/only',
+    earlierJobUrl: '',
+  });
+
+  assert.equal(report.includes('the verification before the fix'), false);
+});
+
+// Guards the expression that feeds it: when no re-verification ran, both step
+// outputs hold the same URL, and repeating it would read as two sessions.
+test('an earlier link identical to the current one is not repeated', () => {
+  const report = buildPlatformReport(job({ result: { status: 'pass', checks: ['ok'] } }), {
+    ...OPTIONS,
+    jobUrl: 'https://console.example/sessions/same',
+    earlierJobUrl: 'https://console.example/sessions/same',
+  });
+
+  assert.equal(report.includes('the verification before the fix'), false);
+});
