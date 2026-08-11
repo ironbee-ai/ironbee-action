@@ -919,3 +919,47 @@ test('binding: an empty base with no parent declares no changeset', () => {
     ['--commit', 'a'.repeat(40), '--no-diff'],
   );
 });
+
+// ─── verification_auto ───────────────────────────────────────────────────────
+//
+// Off means "verify only when somebody asks". What it cannot mean is "do not
+// start": the caller's own steps have run before this action's first one, which
+// is why the input is a convenience and the job-level `if:` is the saving.
+
+test('plan: auto off skips a push, with no error and no mode', () => {
+  const plan = resolvePlan(input({ eventName: 'push', auto: 'false' }));
+
+  assert.equal(plan.skipped, true);
+  assert.equal(plan.ok, true);
+  assert.equal(plan.mode, null);
+  assert.deepEqual(plan.errors, []);
+});
+
+test('plan: auto off skips a pull request too', () => {
+  assert.equal(resolvePlan(input({ eventName: 'pull_request', auto: 'false' })).skipped, true);
+});
+
+// The two a person asked for by name. A comment carries the command itself, and
+// a dispatch is somebody pressing a button — neither is "automatic".
+test('plan: auto off still runs a comment command and a manual dispatch', () => {
+  for (const eventName of ['issue_comment', 'workflow_dispatch']) {
+    const plan = resolvePlan(input({ eventName, auto: 'false' }));
+    assert.notEqual(plan.skipped, true, eventName);
+    assert.equal(plan.mode, 'platform', eventName);
+  }
+});
+
+test('plan: auto on is the default and changes nothing', () => {
+  assert.notEqual(resolvePlan(input({ eventName: 'push' })).skipped, true);
+});
+
+// A run that is not going to happen must not also complain about how it was
+// configured: the skip is decided before any credential is required, so a
+// repository that switched verification off does not get a red run telling it
+// the key it deliberately never set is missing.
+test('plan: a skipped run reports no configuration errors', () => {
+  const plan = resolvePlan(input({ eventName: 'push', auto: 'false', ironbeeApiKey: '', appUrl: '' }));
+
+  assert.equal(plan.ok, true);
+  assert.deepEqual(plan.errors, []);
+});

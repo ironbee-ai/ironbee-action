@@ -76,7 +76,7 @@ The action adapts its behavior based on the trigger event:
 | `push` (main/master) | Diff-based — verifies changed pages | Creates fix PR automatically if issues found |
 | `workflow_dispatch` | Full — verifies entire application | Creates fix PR automatically if issues found |
 | `schedule` | Full — verifies entire application | Creates fix PR automatically if issues found |
-| `issue_comment` | Diff-based — verifies the pull request the comment is on | Commits fixes to the PR branch **only when the comment asks**, posts the report comment |
+| `issue_comment` | Diff-based — verifies the pull request the comment is on (never switched off by `verification_auto`) | Commits fixes to the PR branch **only when the comment asks**, posts the report comment |
 
 ### PR Verification
 
@@ -174,6 +174,52 @@ them there is nothing to tell "it started" from "nothing listened".
 **Fork pull requests are refused on this event**, and for the opposite reason to
 the usual one: a comment run holds the base repository's secrets, so building
 and starting a fork's code under it would hand them to whoever opened it.
+
+### Turning Automatic Verification Off
+
+To have **only** the comment command (and a manual dispatch) verify anything,
+while a push or a pull request does nothing. There are two ways, and they cost
+different things.
+
+**In your workflow's `if:` — nothing runs at all.** GitHub evaluates this before
+a runner is assigned, so the job is skipped outright: no runner minutes, no
+checkout, no builds.
+
+```yaml
+jobs:
+  verify:
+    if: >-
+      (github.event_name != 'issue_comment' && vars.IRONBEE_VERIFICATION_AUTO != 'false') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+       startsWith(github.event.comment.body, '/ironbee-verify'))
+```
+
+**Or hand it to the action — one line, and it decides.**
+
+```yaml
+      - uses: ironbee-ai/ironbee-action@v0
+        with:
+          verification_auto: ${{ vars.IRONBEE_VERIFICATION_AUTO }}   # 'false' switches it off
+```
+
+The action's first real step resolves to "nothing to do", every step after it is
+skipped, and the job ends green in seconds — no verification, no job charged
+against your quota, no gate.
+
+**What the input cannot do is give back the steps that ran before it.** An action
+is a step: by the time its first line executes, your checkout, image builds and
+dependency installs have already happened, and nothing inside a step can reach
+back before itself. In a workflow that builds Docker images that is most of the
+run's cost. So: the input is the convenient one, the `if:` is the one that
+actually saves the time. Use the `if:` when the job does expensive setup, the
+input when it does not — or both, since the input is harmless once the `if:` is
+there.
+
+Neither switches off a run somebody asked for **by name**: a comment command and
+a `workflow_dispatch` still verify. "Automatic" describes a push and a pull
+request, not a person pressing a button.
 
 ### Manual Verification
 

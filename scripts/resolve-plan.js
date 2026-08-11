@@ -127,6 +127,7 @@ function parseBoolean(name, value, fallback, errors) {
  * anything is installed rather than turn into a step that quietly did not run.
  */
 const BOOLEAN_INPUTS = [
+  ['verification_auto', 'auto', true],
   ['verification_apply_fix', 'fix', true],
   ['ironbee_bind_repository', 'bindRepository', true],
   ['ironbee_exclude_files', 'excludeFiles', true],
@@ -496,6 +497,45 @@ function parseHeaders(raw) {
 
 // ─── The plan ────────────────────────────────────────────────────────────────
 
+/**
+ * The events `verification_auto` does NOT switch off: someone asked for these
+ * ones in as many words. A comment carries the command, and a dispatch is a
+ * person pressing a button — "automatic" describes neither.
+ */
+const EXPLICIT_EVENTS = ['issue_comment', 'workflow_dispatch'];
+
+/**
+ * A run that was configured not to happen: no mode, no target, no error.
+ *
+ * Every step of the action is conditioned on `mode`, so an empty one is what
+ * makes the rest of the run a no-op — including the gate, which is why the job
+ * ends green rather than on an unverified pass.
+ *
+ * What this CANNOT do is give back the caller's own steps. A checkout, an image
+ * build and a dependency install have already run by the time an action's first
+ * step does, and nothing inside one can reach back before it. The `if:` on the
+ * job is what costs nothing; this is what makes it optional.
+ */
+function skippedPlan(eventName) {
+  return {
+    ok: true,
+    skipped: true,
+    skipReason: `verification_auto is off, and ${eventName || 'this event'} is not a run anyone asked for by name`,
+    mode: null,
+    modeReason: '',
+    target: null,
+    needsApp: false,
+    canFix: false,
+    verbose: false,
+    excludeFiles: false,
+    consoleUrl: '',
+    timeoutFloorMinutes: 0,
+    cliArgs: [],
+    warnings: [],
+    errors: [],
+  };
+}
+
 function resolvePlan(input) {
   const errors = [];
   const warnings = [];
@@ -505,6 +545,12 @@ function resolvePlan(input) {
   const flags = {};
   for (const [name, key, fallback] of BOOLEAN_INPUTS) {
     flags[key] = parseBoolean(name, input[key], fallback, errors);
+  }
+
+  // Before every other check, and before any credential is required: a run that
+  // is not going to happen must not also complain about how it was configured.
+  if (!flags.auto && !EXPLICIT_EVENTS.includes(String(input.eventName || ''))) {
+    return skippedPlan(input.eventName);
   }
 
   const hasAnthropicCredential = present(input.anthropicApiKey) || present(input.claudeCodeOauthToken);
@@ -694,6 +740,7 @@ function readInput() {
     excludeFiles: process.env.INPUT_IRONBEE_EXCLUDE_FILES,
     extraConfig: process.env.INPUT_IRONBEE_EXTRA_CONFIG,
     verbose: process.env.INPUT_VERBOSE,
+    auto: process.env.INPUT_VERIFICATION_AUTO,
   };
 }
 
@@ -756,6 +803,12 @@ function main() {
   }
 
   const plan = resolvePlan(readInput());
+
+  if (plan.skipped) {
+    console.log(`::notice::IronBee verification skipped — ${plan.skipReason}`);
+    writeOutputs(plan);
+    return;
+  }
 
   for (const warning of plan.warnings) {
     console.log(`::warning::${warning}`);

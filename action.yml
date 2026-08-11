@@ -137,6 +137,14 @@ inputs:
     description: 'Additional instructions for the verification agent. Reaches whichever engine runs.'
     required: false
     default: ''
+  verification_auto:
+    description: >-
+      One of: true, false. Off means only a run somebody asked for by name — a
+      comment command or a manual dispatch — verifies anything; a push or a pull
+      request does nothing. It cannot save the workflow's own steps before this
+      action (checkout, builds, installs); a job-level `if:` is what does that.
+    required: false
+    default: 'true'
   verification_command:
     description: >-
       The comment command that starts a run on an `issue_comment` event, as
@@ -385,6 +393,7 @@ runs:
         INPUT_IRONBEE_COLLECTOR_URL: ${{ inputs.ironbee_collector_url }}
         INPUT_IRONBEE_BIND_REPOSITORY: ${{ inputs.ironbee_bind_repository }}
         INPUT_IRONBEE_JOB_TIMEOUT_MINUTES: ${{ inputs.ironbee_job_timeout_minutes }}
+        INPUT_VERIFICATION_AUTO: ${{ inputs.verification_auto }}
         INPUT_VERIFICATION_APPLY_FIX: ${{ inputs.verification_apply_fix }}
         INPUT_CLAUDE_CODE_MODEL: ${{ inputs.claude_code_model }}
         INPUT_CLAUDE_CODE_MAX_TURNS: ${{ inputs.claude_code_max_turns }}
@@ -480,6 +489,7 @@ runs:
 
     # ── Install IronBee CLI ────────────────────────────────────────────
     - name: Install IronBee CLI
+      if: steps.plan.outputs.mode != ''
       shell: bash
       run: |
         # Resolve "latest" via `npm view` so the install pins to an explicit
@@ -755,6 +765,7 @@ runs:
 
     # ── Configure git identity ────────────────────────────────────────
     - name: Configure git identity
+      if: steps.plan.outputs.mode != ''
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
