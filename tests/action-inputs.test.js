@@ -77,7 +77,9 @@ test('action.yml: the plan step exports every variable the script reads', () => 
   const exported = new Set([
     ...[...planStep.matchAll(/^\s+([A-Z][A-Z0-9_]+):\s/gm)].map((m) => m[1]),
     // Assigned and exported in the step's own shell rather than declared in env.
-    ...[...planStep.matchAll(/^\s+export ([A-Z][A-Z0-9_]+)\s*$/gm)].map((m) => m[1]),
+    // One `export` may carry several names.
+    ...[...planStep.matchAll(/^\s+export ((?:[A-Z][A-Z0-9_]*\s*)+)$/gm)]
+      .flatMap((m) => m[1].trim().split(/\s+/)),
   ]);
   // GITHUB_* comes from the runner, not from this step.
   const read = [...SCRIPT.matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)]

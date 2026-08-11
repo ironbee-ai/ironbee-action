@@ -324,14 +324,21 @@ function resolveConsoleUrl({ consoleUrl, collectorUrl }) {
  * can report one this checkout does not have — both of which are forty hex
  * characters and pass every shape check on the way to failing at the checkout.
  *
- * `parentSha` is the commit's own first parent, and it is what stands between
- * an unusable base and no changeset at all. A force-push orphans the SHA the
- * event reports as `before`, so a workflow that re-pushes a rewritten commit —
- * the shape every "re-run the verification on this change" loop takes — would
- * otherwise bind the commit and declare nothing changed, leaving the agent to
- * review an application instead of a change.
+ * `parentSha` is the commit's own first parent, and it is what stands between a
+ * base that says nothing and no changeset at all. Two things send a push there,
+ * and both are the same loop: re-pushing a rewritten commit. Either the old tip
+ * is orphaned and this checkout cannot resolve it (`baseUsable` false), or some
+ * other ref still holds it and it resolves to a tree identical to the commit's
+ * (`baseEmpty`) — a rewrite that changed no content, where "what this push
+ * changed" is honestly nothing and binding it would leave the agent reviewing an
+ * application instead of a change.
+ *
+ * `baseEmpty` is why this needs no input asking which base to use. An empty
+ * changeset is not an answer, it is the base being the wrong one, and the parent
+ * is strictly more to review rather than less — so nothing is traded away by
+ * falling back on it, and nobody has to know to ask.
  */
-function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, parentSha, bind }) {
+function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, baseEmpty, parentSha, bind }) {
   // Off means the run verifies the application and nothing else — no changeset,
   // no checkout. The case it exists for is a private repository the IronBee
   // GitHub App does not cover, where binding it fails the run at the agent's
@@ -345,8 +352,9 @@ function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, p
   if (eventName === 'push' && present(sha)) {
     // The event's own base first: a push can carry several commits, and only
     // `before` spans all of them. The parent spans the tip alone, so preferring
-    // it would silently narrow a multi-commit push to its last commit.
-    if (baseUsable && present(beforeSha)) {
+    // it would silently narrow a multi-commit push to its last commit — a gate
+    // that reviews the last change and waves the ones before it through.
+    if (baseUsable && !baseEmpty && present(beforeSha)) {
       return ['--commit', String(sha).trim(), '--base', String(beforeSha).trim()];
     }
     if (present(parentSha)) {
@@ -406,6 +414,7 @@ const PLATFORM_ONLY_INPUTS = [
   { name: 'ironbee_bind_repository', key: 'bindRepository', fallback: 'true' },
   { name: 'ironbee_job_timeout_minutes', key: 'jobTimeoutMinutes', fallback: '' },
   { name: 'ironbee_project', key: 'project', fallback: '' },
+  { name: 'app_restart_command', key: 'appRestartCommand', fallback: '' },
   { name: 'app_wait_seconds', key: 'appWaitSeconds', fallback: '' },
   { name: 'app_headers', key: 'headers', fallback: '' },
   { name: 'app_secret_headers', key: 'secretHeaders', fallback: '' },
@@ -560,6 +569,7 @@ function resolvePlan(input) {
       sha: input.sha,
       beforeSha: input.beforeSha,
       baseUsable: truthy(input.baseUsable),
+      baseEmpty: truthy(input.baseEmpty),
       parentSha: input.parentSha,
     }));
     cliArgs.push('--json');
@@ -606,10 +616,12 @@ function readInput() {
     sha: process.env.COMMIT_SHA,
     beforeSha: process.env.BEFORE_SHA,
     baseUsable: process.env.BASE_USABLE,
+    baseEmpty: process.env.BASE_EMPTY,
     parentSha: process.env.PARENT_SHA,
     appUrl: process.env.INPUT_APP_URL,
     appStartCommand: process.env.INPUT_APP_START_COMMAND,
     appPort: process.env.INPUT_APP_PORT,
+    appRestartCommand: process.env.INPUT_APP_RESTART_COMMAND,
     appWaitSeconds: process.env.INPUT_APP_WAIT_SECONDS,
     project: process.env.INPUT_IRONBEE_PROJECT,
     consoleUrl: process.env.INPUT_IRONBEE_CONSOLE_URL,

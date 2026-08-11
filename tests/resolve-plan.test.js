@@ -479,6 +479,7 @@ test('plan: platform-only inputs warn in local mode', () => {
     project: 'shop',
     headers: 'X-Marker: one',
     bindRepository: 'false',
+    appRestartCommand: 'docker compose up -d --build',
   }));
   assert.equal(plan.ok, true);
   const text = plan.warnings.join(' ');
@@ -487,6 +488,7 @@ test('plan: platform-only inputs warn in local mode', () => {
   assert.match(text, /ironbee_project/);
   assert.match(text, /app_headers/);
   assert.match(text, /ironbee_bind_repository/);
+  assert.match(text, /app_restart_command/);
 });
 
 test('plan: platform-only inputs are silent in platform mode', () => {
@@ -762,4 +764,57 @@ test('port: a real disagreement still warns, and the URL still wins', () => {
   const result = resolveTarget({ appUrl: 'http://localhost:4000', appStartCommand: '', appPort: '3000' });
   assert.deepEqual(result.target, { kind: 'tunnel', port: 4000 });
   assert.match(result.warnings.join(' '), /app_url names port 4000 and app_port is 3000/);
+});
+
+// ─── An empty changeset is the base being wrong ──────────────────────────────
+//
+// The other half of the re-push loop. When some ref still holds the old tip —
+// a fix PR branch opened by an earlier failing run does exactly that — the
+// event's base resolves fine and measures a rewrite that changed no content, so
+// the diff comes back empty and the run has nothing to review. Detectable, so
+// no input has to ask which base was meant.
+
+test('binding: a base that resolves to the same content falls back to the parent', () => {
+  assert.deepEqual(
+    resolveRepoBinding({
+      eventName: 'push',
+      sha: 'a'.repeat(40),
+      beforeSha: 'b'.repeat(40),
+      baseUsable: true,
+      baseEmpty: true,
+      parentSha: 'c'.repeat(40),
+    }),
+    ['--commit', 'a'.repeat(40), '--base', 'c'.repeat(40)],
+  );
+});
+
+// Nothing is traded away by the fallback: the parent is strictly more to review
+// than an empty diff. But a base that does say something must still win, or a
+// multi-commit push silently narrows to its tip.
+test('binding: a base with real content still outranks the parent', () => {
+  assert.deepEqual(
+    resolveRepoBinding({
+      eventName: 'push',
+      sha: 'a'.repeat(40),
+      beforeSha: 'b'.repeat(40),
+      baseUsable: true,
+      baseEmpty: false,
+      parentSha: 'c'.repeat(40),
+    }),
+    ['--commit', 'a'.repeat(40), '--base', 'b'.repeat(40)],
+  );
+});
+
+test('binding: an empty base with no parent declares no changeset', () => {
+  assert.deepEqual(
+    resolveRepoBinding({
+      eventName: 'push',
+      sha: 'a'.repeat(40),
+      beforeSha: 'b'.repeat(40),
+      baseUsable: true,
+      baseEmpty: true,
+      parentSha: '',
+    }),
+    ['--commit', 'a'.repeat(40), '--no-diff'],
+  );
 });
