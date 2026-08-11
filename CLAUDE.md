@@ -88,6 +88,16 @@ narrower vocabulary, and `verbose: on` would then be on in the generated config 
 the step. `verbose` and `ironbee_exclude_files` are read back from the plan's own outputs
 for exactly that reason.
 
+The repository binding measures the changeset from the first base that exists:
+the push event's own `before` (it spans every commit in the push), then the
+commit's first parent, then nothing. The parent step matters more than it looks
+— a force-push orphans the SHA the event reports as `before`, so the shape every
+"re-push this change and verify it again" loop takes would otherwise bind the
+commit and declare nothing changed, leaving the agent reviewing an application
+instead of a change. The parent is read with `git cat-file commit` rather than
+`rev-parse <sha>^`, because the default checkout is one commit deep and the
+graft makes git report the commit as parentless while the object still names it.
+
 The service endpoints resolve as a set, not one at a time. `ironbee_collector_url`
 is the CLI's own stage-inference key, so the generated config **omits**
 `collector.url` when nobody named one rather than writing a guess — a written

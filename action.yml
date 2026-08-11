@@ -296,6 +296,19 @@ runs:
         fi
         export BASE_USABLE
 
+        # The commit's own first parent, as the fallback base. Read out of the
+        # commit object rather than with `rev-parse "$COMMIT_SHA^"`, because the
+        # default checkout is one commit deep: the graft makes git report the
+        # commit as parentless, while the object it just fetched still names the
+        # parent on its own `parent` line. The base only has to exist on the
+        # remote — the run fetches both SHAs itself — and a parent always does
+        # when its child does.
+        PARENT_SHA=""
+        if [ -n "$COMMIT_SHA" ] && git cat-file -e "${COMMIT_SHA}^{commit}" 2>/dev/null; then
+          PARENT_SHA="$(git cat-file commit "$COMMIT_SHA" | awk '/^parent /{print $2; exit}')"
+        fi
+        export PARENT_SHA
+
         node "${{ github.action_path }}/scripts/resolve-plan.js"
 
     # ── Preflight: refuse what cannot work, before installing anything ─

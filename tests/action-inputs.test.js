@@ -71,14 +71,27 @@ test('action.yml: every declared input is referenced somewhere', () => {
 // a boolean means "the default" and for a target field means "not configured".
 test('action.yml: the plan step exports every variable the script reads', () => {
   const planStep = ACTION.slice(0, ACTION.indexOf('scripts/resolve-plan.js'));
-  const exported = new Set([...planStep.matchAll(/^\s+(INPUT_[A-Z0-9_]+):/gm)].map((m) => m[1]));
-  const read = new Set([...SCRIPT.matchAll(/process\.env\.(INPUT_[A-Z0-9_]+)/g)].map((m) => m[1]));
+  // Every variable, not only the INPUT_* ones: the step also computes values
+  // git has to answer for (the base's usability, the commit's parent), and a
+  // new read of that kind was invisible to an INPUT_-only check.
+  const exported = new Set([
+    ...[...planStep.matchAll(/^\s+([A-Z][A-Z0-9_]+):\s/gm)].map((m) => m[1]),
+    // Assigned and exported in the step's own shell rather than declared in env.
+    ...[...planStep.matchAll(/^\s+export ([A-Z][A-Z0-9_]+)\s*$/gm)].map((m) => m[1]),
+  ]);
+  // GITHUB_* comes from the runner, not from this step.
+  const read = [...SCRIPT.matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)]
+    .map((m) => m[1])
+    .filter((name) => !name.startsWith('GITHUB_'));
 
-  const missing = [...read].filter((name) => !exported.has(name)).sort();
+  const missing = [...new Set(read)].filter((name) => !exported.has(name)).sort();
   assert.deepEqual(missing, [], 'read by resolve-plan.js, never exported to it');
 
-  const spare = [...exported].filter((name) => !read.has(name)).sort();
-  assert.deepEqual(spare, [], 'exported to resolve-plan.js, never read');
+  const readSet = new Set(read);
+  const spareInputs = [...exported]
+    .filter((name) => name.startsWith('INPUT_') && !readSet.has(name))
+    .sort();
+  assert.deepEqual(spareInputs, [], 'exported to resolve-plan.js, never read');
 });
 
 /** The tables' entries, read off the source so the test cannot hold a stale copy. */

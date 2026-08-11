@@ -267,19 +267,51 @@ test('binding: a push with a usable base measures from it', () => {
 // The first push of a branch reports an all-zero SHA, and a force-push can name
 // one this checkout does not have. Both are forty hex characters and would pass
 // every shape check on the way to failing at the platform's own checkout.
-test('binding: a push with an unusable base declares no changeset', () => {
+test('binding: a push with an unusable base falls back to the commit parent', () => {
   assert.deepEqual(
     resolveRepoBinding({
-      eventName: 'push', sha: 'a'.repeat(40), beforeSha: '0'.repeat(40), baseUsable: false,
+      eventName: 'push',
+      sha: 'a'.repeat(40),
+      beforeSha: '0'.repeat(40),
+      baseUsable: false,
+      parentSha: 'c'.repeat(40),
+    }),
+    ['--commit', 'a'.repeat(40), '--base', 'c'.repeat(40)],
+  );
+});
+
+// Only with nothing left to measure from — a repository's first commit.
+test('binding: a push with no usable base and no parent declares no changeset', () => {
+  assert.deepEqual(
+    resolveRepoBinding({
+      eventName: 'push', sha: 'a'.repeat(40), beforeSha: '0'.repeat(40), baseUsable: false, parentSha: '',
     }),
     ['--commit', 'a'.repeat(40), '--no-diff'],
   );
 });
 
+// A push can carry several commits and only `before` spans all of them, so the
+// parent must never win over a usable base — it would silently narrow the
+// changeset to the last commit of the push.
+test('binding: a usable base outranks the parent', () => {
+  assert.deepEqual(
+    resolveRepoBinding({
+      eventName: 'push',
+      sha: 'a'.repeat(40),
+      beforeSha: 'b'.repeat(40),
+      baseUsable: true,
+      parentSha: 'c'.repeat(40),
+    }),
+    ['--commit', 'a'.repeat(40), '--base', 'b'.repeat(40)],
+  );
+});
+
+// The parent is available here too and is deliberately not used: a push is
+// about its tip commit, while a dispatch is about the branch as it stands.
 test('binding: a manual or scheduled run binds the commit with no changeset', () => {
   for (const eventName of ['workflow_dispatch', 'schedule']) {
     assert.deepEqual(
-      resolveRepoBinding({ eventName, sha: 'a'.repeat(40) }),
+      resolveRepoBinding({ eventName, sha: 'a'.repeat(40), parentSha: 'c'.repeat(40) }),
       ['--commit', 'a'.repeat(40), '--no-diff'],
     );
   }

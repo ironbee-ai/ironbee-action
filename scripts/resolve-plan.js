@@ -323,8 +323,15 @@ function resolveConsoleUrl({ consoleUrl, collectorUrl }) {
  * because the first push of a branch reports an all-zero SHA and a force-push
  * can report one this checkout does not have — both of which are forty hex
  * characters and pass every shape check on the way to failing at the checkout.
+ *
+ * `parentSha` is the commit's own first parent, and it is what stands between
+ * an unusable base and no changeset at all. A force-push orphans the SHA the
+ * event reports as `before`, so a workflow that re-pushes a rewritten commit —
+ * the shape every "re-run the verification on this change" loop takes — would
+ * otherwise bind the commit and declare nothing changed, leaving the agent to
+ * review an application instead of a change.
  */
-function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, bind }) {
+function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, parentSha, bind }) {
   // Off means the run verifies the application and nothing else — no changeset,
   // no checkout. The case it exists for is a private repository the IronBee
   // GitHub App does not cover, where binding it fails the run at the agent's
@@ -336,11 +343,22 @@ function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, b
     return ['--pr', String(prNumber).trim()];
   }
   if (eventName === 'push' && present(sha)) {
+    // The event's own base first: a push can carry several commits, and only
+    // `before` spans all of them. The parent spans the tip alone, so preferring
+    // it would silently narrow a multi-commit push to its last commit.
     if (baseUsable && present(beforeSha)) {
       return ['--commit', String(sha).trim(), '--base', String(beforeSha).trim()];
     }
+    if (present(parentSha)) {
+      return ['--commit', String(sha).trim(), '--base', String(parentSha).trim()];
+    }
     return ['--commit', String(sha).trim(), '--no-diff'];
   }
+  // Every other event — a manual dispatch, a schedule — gets the commit and no
+  // changeset. The parent is available here too and is deliberately not used:
+  // "the tip commit" is what a push is about, while a dispatch is about the
+  // branch as it stands, and guessing its last commit was the interesting one
+  // would point the agent at a change nobody asked about.
   if (present(sha)) {
     return ['--commit', String(sha).trim(), '--no-diff'];
   }
@@ -542,6 +560,7 @@ function resolvePlan(input) {
       sha: input.sha,
       beforeSha: input.beforeSha,
       baseUsable: truthy(input.baseUsable),
+      parentSha: input.parentSha,
     }));
     cliArgs.push('--json');
   }
@@ -587,6 +606,7 @@ function readInput() {
     sha: process.env.COMMIT_SHA,
     beforeSha: process.env.BEFORE_SHA,
     baseUsable: process.env.BASE_USABLE,
+    parentSha: process.env.PARENT_SHA,
     appUrl: process.env.INPUT_APP_URL,
     appStartCommand: process.env.INPUT_APP_START_COMMAND,
     appPort: process.env.INPUT_APP_PORT,
