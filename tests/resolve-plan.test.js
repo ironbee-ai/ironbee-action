@@ -283,6 +283,26 @@ test('binding: a manual or scheduled run binds the commit with no changeset', ()
   }
 });
 
+// A private repository the App does not cover fails at the agent's front door
+// with nothing verified; unbinding it verifies the application instead.
+test('binding: turning it off declares no repository at all', () => {
+  assert.deepEqual(
+    resolveRepoBinding({ bind: false, eventName: 'pull_request', prNumber: '42', sha: 'a'.repeat(40) }),
+    ['--no-repo'],
+  );
+});
+
+test('plan: bind_repository=false reaches the CLI', () => {
+  const plan = resolvePlan(input({ bindRepository: 'false' }));
+  assert.equal(plan.ok, true);
+  assert.ok(plan.cliArgs.includes('--no-repo'));
+  assert.equal(plan.cliArgs.includes('--pr'), false);
+});
+
+test('plan: bind_repository defaults to binding', () => {
+  assert.ok(resolvePlan(input()).cliArgs.includes('--pr'));
+});
+
 test('binding: nothing to bind produces no flags', () => {
   assert.deepEqual(resolveRepoBinding({ eventName: 'push', sha: '' }), []);
 });

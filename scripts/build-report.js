@@ -199,7 +199,7 @@ function recoveryHint(message) {
   if (!message || !/repo checkout failed/i.test(message)) return [];
   return [
     'The run could not read the repository. Install the IronBee GitHub App on it, '
-      + 'or verify without repository context.',
+      + 'or set `bind_repository: false` to verify the application without a checkout.',
     '',
   ];
 }

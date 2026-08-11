@@ -235,7 +235,14 @@ function resolveTarget({ appUrl, appStartCommand, appPort }) {
  * can report one this checkout does not have — both of which are forty hex
  * characters and pass every shape check on the way to failing at the checkout.
  */
-function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable }) {
+function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, bind }) {
+  // Off means the run verifies the application and nothing else — no changeset,
+  // no checkout. The case it exists for is a private repository the IronBee
+  // GitHub App does not cover, where binding it fails the run at the agent's
+  // front door with nothing verified.
+  if (bind === false) {
+    return ['--no-repo'];
+  }
   if (eventName === 'pull_request' && present(prNumber)) {
     return ['--pr', String(prNumber).trim()];
   }
@@ -403,6 +410,7 @@ function resolvePlan(input) {
       cliArgs.push('--timeout', String(positiveInt(input.jobTimeoutMinutes) * 60));
     }
     cliArgs.push(...resolveRepoBinding({
+      bind: input.bindRepository === undefined ? true : truthy(input.bindRepository),
       eventName: input.eventName,
       prNumber: input.prNumber,
       sha: input.sha,
@@ -450,6 +458,7 @@ function readInput() {
     appPort: process.env.INPUT_APP_PORT,
     appWaitSeconds: process.env.INPUT_APP_WAIT_SECONDS,
     project: process.env.INPUT_IRONBEE_PROJECT,
+    bindRepository: process.env.INPUT_BIND_REPOSITORY,
     jobTimeoutMinutes: process.env.INPUT_JOB_TIMEOUT_MINUTES,
     headers: process.env.INPUT_APP_HEADERS,
     secretHeaders: process.env.INPUT_APP_SECRET_HEADERS,

@@ -36,6 +36,13 @@ inputs:
     description: 'IronBee API base URL. Leave empty to use the CLI default.'
     required: false
     default: ''
+  bind_repository:
+    description: >-
+      Bind the run to the repository so the agent reads the changeset. Turn it
+      off to verify the application without repository context — which is what a
+      private repository the IronBee GitHub App does not cover needs.
+    required: false
+    default: 'true'
   ironbee_project:
     description: 'Project the results attach to. Leave empty to derive it from the git remote.'
     required: false
@@ -221,6 +228,7 @@ runs:
         INPUT_APP_HEADERS: ${{ inputs.app_headers }}
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
         INPUT_IRONBEE_PROJECT: ${{ inputs.ironbee_project }}
+        INPUT_BIND_REPOSITORY: ${{ inputs.bind_repository }}
         INPUT_JOB_TIMEOUT_MINUTES: ${{ inputs.job_timeout_minutes }}
         INPUT_FIX: ${{ inputs.fix }}
         INPUT_MODEL: ${{ inputs.model }}

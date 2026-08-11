@@ -27,7 +27,7 @@ The verification itself can run in one of two places. Everything after it — th
 
 - the repository is **public** → **platform**. A public repository can be checked out without the GitHub App.
 - the repository is **private** and an Anthropic credential is set → **local**. A private repository needs the App, and whether it is installed is the one thing the action cannot check for free — so it uses the engine it knows can run. **If the App does cover your repository, set `verification_mode: platform`.**
-- the repository is **private** with no Anthropic credential → **platform**, because it is the only engine available. If the App is missing the run fails saying so.
+- the repository is **private** with no Anthropic credential → **platform**, because it is the only engine available. If the App is missing the run fails saying so — set `bind_repository: false` to verify the application without a checkout instead.
 
 ## What a run does
 
@@ -279,6 +279,7 @@ For any IronBee CLI setting not exposed as a dedicated input, pass a JSON object
 | **IronBee — Console report links** | | | |
 | `ironbee_console_url` | No | `console.ironbee.ai` | IronBee Console hostname (no scheme) for session links in the report |
 | `ironbee_api_url` | No | | IronBee API base URL. Empty uses the CLI default |
+| `bind_repository` | No | `true` | Bind the run to the repository so the agent reads the changeset. Turn it off to verify the application without repository context — what a private repository the IronBee GitHub App does not cover needs |
 | `ironbee_project` | No | | Project the results attach to. Empty derives it from the git remote |
 | `job_timeout_minutes` | No | | Run timeout for a platform job. Empty uses the API default |
 | **IronBee — DevTools modes** | | | |
