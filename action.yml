@@ -188,6 +188,17 @@ inputs:
       "docker compose up -d --build".
     required: false
     default: ''
+  app_logs_command:
+    description: >-
+      Command that prints the application's own logs, captured into the
+      evidence artifact after the run. Needed whenever app_start_command hands
+      off: what this action captures then is the lifecycle chatter of whatever
+      it launched, not the application, so a service that died or stopped
+      consuming leaves no trace and every question about it is answered by
+      guesswork. For a compose project:
+      "docker compose logs --no-color --tail=2000".
+    required: false
+    default: ''
   app_wait_seconds:
     description: 'How long to wait for the local application to accept connections. Empty uses the CLI default (60s).'
     required: false
@@ -275,6 +286,7 @@ runs:
         INPUT_APP_START_COMMAND: ${{ inputs.app_start_command }}
         INPUT_APP_PORT: ${{ inputs.app_port }}
         INPUT_APP_RESTART_COMMAND: ${{ inputs.app_restart_command }}
+        INPUT_APP_LOGS_COMMAND: ${{ inputs.app_logs_command }}
         INPUT_APP_WAIT_SECONDS: ${{ inputs.app_wait_seconds }}
         INPUT_APP_HEADERS: ${{ inputs.app_headers }}
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
@@ -1289,6 +1301,19 @@ runs:
     #
     # After everything that could still need the application: the fix round and
     # the re-verification both run against it.
+    # Before the stop, not after: whatever holds the logs is usually the same
+    # thing the stop removes.
+    - name: Collect the application's own logs
+      if: always() && steps.plan.outputs.needs_app == 'true' && inputs.app_logs_command != ''
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        APP_LOGS_COMMAND: ${{ inputs.app_logs_command }}
+      run: |
+        mkdir -p .ironbee/artifacts
+        bash -c "$APP_LOGS_COMMAND" > .ironbee/artifacts/app-service-logs.txt 2>&1 \
+          || echo "::warning::app_logs_command failed; the evidence carries no application logs"
+
     - name: Stop the application
       if: always() && steps.plan.outputs.needs_app == 'true'
       shell: bash
@@ -1304,7 +1329,9 @@ runs:
       uses: actions/upload-artifact@v4
       with:
         name: ironbee-application-log
-        path: ${{ inputs.working_directory }}/.ironbee/artifacts/app.log
+        path: |
+          ${{ inputs.working_directory }}/.ironbee/artifacts/app.log
+          ${{ inputs.working_directory }}/.ironbee/artifacts/app-service-logs.txt
         if-no-files-found: ignore
         retention-days: 30
 

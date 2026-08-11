@@ -480,6 +480,7 @@ test('plan: platform-only inputs warn in local mode', () => {
     headers: 'X-Marker: one',
     bindRepository: 'false',
     appRestartCommand: 'docker compose up -d --build',
+    appLogsCommand: 'docker compose logs',
   }));
   assert.equal(plan.ok, true);
   const text = plan.warnings.join(' ');
@@ -489,6 +490,7 @@ test('plan: platform-only inputs warn in local mode', () => {
   assert.match(text, /app_headers/);
   assert.match(text, /ironbee_bind_repository/);
   assert.match(text, /app_restart_command/);
+  assert.match(text, /app_logs_command/);
 });
 
 test('plan: platform-only inputs are silent in platform mode', () => {
