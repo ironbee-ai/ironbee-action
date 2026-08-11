@@ -27,3 +27,13 @@ jobs:
           assert data['runs']['using'] == 'composite', 'Not a composite action'
           print('action.yml is valid')
           "
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # The decision logic the action runs on. A broken module here would
+      # otherwise fail in a customer's workflow rather than in ours.
+      - name: Run the script tests
+        run: node --test tests/*.test.js

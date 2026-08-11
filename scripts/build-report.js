@@ -1,22 +1,41 @@
 #!/usr/bin/env node
 
-// Builds a markdown verification report from IronBee artifacts.
+// Builds a markdown verification report.
 //
-// Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [console-url] [session-id]
+// Two sources, one report. A verification that ran on this runner leaves
+// artifacts behind and the report is assembled from them; one that ran on the
+// IronBee platform leaves a job body, and the report is assembled from that.
+// The header, the badge and the footer are shared, so the two read as one
+// product rather than as two tools that happen to comment on the same PR.
 //
-// Reads:
-//   - <artifacts-dir>/sessions/<id>/actions.jsonl for verdict details
-//
-// When console-url and session-id are provided, a link to the IronBee Console
-// is rendered under the report header.
+// Local:    node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [console-url] [session-id]
+// Platform: node build-report.js --job <path> --version <v> [--console <url>]
+//   [--job-url <url>] [--earlier-job-url <url>]
+//                                [--failure-code <c>] [--failure-message <m>]
 //
 // Outputs markdown to stdout.
 
 const fs = require('fs');
 const path = require('path');
 
+// Shared by both report shapes, so a reader sees one product.
+const HEADER = '## <img src="https://ironbee.ai/favicon.png" width="24" height="24"> IronBee Verification Report';
+
 function main() {
-  const [artifactsDir, ironbeeVersion, artifactUrl, consoleUrl, sessionIdArg] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  if (argv[0] === '--job') {
+    console.log(buildPlatformReport(readJobFile(flag(argv, '--job')), {
+      ironbeeVersion: flag(argv, '--version') || 'unknown',
+      consoleUrl: flag(argv, '--console'),
+      jobUrl: flag(argv, '--job-url'),
+      earlierJobUrl: flag(argv, '--earlier-job-url'),
+      failureCode: flag(argv, '--failure-code'),
+      failureMessage: flag(argv, '--failure-message'),
+    }));
+    return;
+  }
+
+  const [artifactsDir, ironbeeVersion, artifactUrl, consoleUrl, sessionIdArg] = argv;
 
   if (!artifactsDir || !ironbeeVersion) {
     console.error('Usage: node build-report.js <artifacts-dir> <ironbee-version> [artifact-url] [console-url] [session-id]');
@@ -32,7 +51,7 @@ function main() {
   const lines = [];
 
   // Header
-  lines.push('## <img src="https://ironbee.ai/favicon.png" width="24" height="24"> IronBee Verification Report');
+  lines.push(HEADER);
   lines.push('');
 
   // Session-level console link (above the verdict badge)
@@ -80,6 +99,134 @@ function main() {
   lines.push(`*Verified by [IronBee](https://github.com/ironbee-ai/ironbee-action) v${ironbeeVersion}*`);
 
   console.log(lines.join('\n'));
+}
+
+function flag(argv, name) {
+  const at = argv.indexOf(name);
+  return at === -1 || at === argv.length - 1 ? '' : argv[at + 1];
+}
+
+function readJobFile(jobPath) {
+  if (!jobPath) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(jobPath, 'utf-8'));
+    return parsed && typeof parsed.id === 'string' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+// The platform report.
+//
+// Renders the verdict a job came back with, and — when it came back without one
+// — says which job it was and why, rather than showing an empty verdict. A run
+// that could not be created has no job at all, and its report is the failure.
+function buildPlatformReport(job, options) {
+  const opts = options || {};
+  const host = consoleHost(opts.consoleUrl);
+  const result = (job && job.result) || null;
+  const status = result && result.status ? result.status : 'unknown';
+  const lines = [];
+
+  lines.push(HEADER);
+  lines.push('');
+
+  const link = opts.jobUrl || (host && job && job.attempt ? `https://${host}/sessions/${job.attempt}` : '');
+  if (link) {
+    lines.push(`🔗 **[View session in IronBee Console](${link})**`);
+    // A fix round runs a second verification, and the badge above belongs to
+    // that one — so linking only it drops the session that found the issues in
+    // the first place. That is the session with the evidence: the failing
+    // checks, the screenshots, the traces. The one linked above shows an
+    // application that works.
+    if (opts.earlierJobUrl && opts.earlierJobUrl !== link) {
+      lines.push(`↳ the verification before the fix: [session](${opts.earlierJobUrl})`);
+    }
+    lines.push('');
+  }
+
+  lines.push(formatBadge(status, 1));
+  lines.push('');
+
+  if (job === null) {
+    const code = opts.failureCode ? `\`${opts.failureCode}\` — ` : '';
+    const message = opts.failureMessage || 'the verification did not produce a job';
+    lines.push(`> ⚠️ **No verification ran.** ${code}${message}`);
+    lines.push('');
+  } else if (result === null) {
+    const error = job.error || {};
+    const label = error.type ? `\`${error.type}\`` : 'the run ended without one';
+    const detail = error.message ? ` — ${error.message}` : '';
+    lines.push(`> ⚠️ **No verdict.** ${label}${detail}`);
+    lines.push('');
+    lines.push(...recoveryHint(error.message));
+  }
+
+  if (result && result.summary) {
+    lines.push(renderSummary(result.summary));
+    lines.push('');
+  }
+
+  // `checks` gets a neutral bullet, never a tick: the contract carries no
+  // per-check status, and a check whose words say it failed would be rendered
+  // as passing.
+  lines.push(...formatList('Checks', result && result.checks, '-'));
+  lines.push(...formatList('Issues', result && result.issues, '-'));
+  // "Suggested", unlike the local report's plain "Fixes", and the difference is
+  // real rather than wording: the run that produces this verdict verifies and
+  // does not edit code, so the field holds remedies it recommends, not changes
+  // it made. Labelling them "Fixes" reads as "these were applied" — on a report
+  // whose whole point is that the issues above are still there.
+  lines.push(...formatList('Suggested fixes', result && result.fixes, '-'));
+
+  if (result && result.refused) {
+    lines.push(`> ℹ️ The run declined or narrowed part of the request (${result.reasonCode || 'no code'}).`);
+    lines.push('');
+  }
+
+  lines.push('---');
+  const jobLine = job ? `Job \`${job.id}\` · ` : '';
+  lines.push(`*${jobLine}Verified by [IronBee](https://github.com/ironbee-ai/ironbee-action) on the IronBee platform*`);
+
+  return lines.join('\n');
+}
+
+// The summary is Markdown the model wrote, and a model sometimes writes the
+// escape sequences instead of the characters — a whole document on one line,
+// with visible backslashes, in a PR comment.
+//
+// Repaired only in the unambiguous case: a string with NO real newline that
+// contains the two-character `\n`. A summary that already has newlines is left
+// exactly as it is, so a legitimate `\n` inside a code sample survives.
+function renderSummary(summary) {
+  if (summary.includes('\n') || !summary.includes('\\n')) {
+    return summary;
+  }
+  return summary
+    .replace(/\\n/g, '\n')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+// The one failure a reader can act on from here: the platform could not read
+// the repository, and the fix is a permission grant it has no way to guess at.
+function recoveryHint(message) {
+  if (!message || !/repo checkout failed/i.test(message)) return [];
+  return [
+    'The run could not read the repository. Install the IronBee GitHub App on it, '
+      + 'or set `bind_repository: false` to verify the application without a checkout.',
+    '',
+  ];
+}
+
+function formatList(label, entries, bullet) {
+  if (!entries || entries.length === 0) return [];
+  const lines = [`**${label}:**`];
+  for (const entry of entries) {
+    lines.push(`${bullet} ${entry}`);
+  }
+  lines.push('');
+  return lines;
 }
 
 // Parse all verdicts from actions.jsonl files in session directories.
@@ -261,4 +408,8 @@ function formatCycle(num, cycle, host) {
   return lines.join('\n');
 }
 
-main();
+module.exports = { buildPlatformReport, formatBadge, consoleHost, renderSummary };
+
+if (require.main === module) {
+  main();
+}

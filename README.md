@@ -8,14 +8,34 @@ https://github.com/user-attachments/assets/4015258a-a6d5-45dd-8ddf-5d736d489436
 
 ## What It Does
 
-IronBee Action automatically verifies code changes via IronBee DevTools and fixes issues found. It orchestrates [Claude Code CLI](https://github.com/anthropics/claude-code) with [IronBee CLI](https://github.com/ironbee-ai/ironbee-cli) to:
+IronBee Action verifies your code changes against a running application, fixes what it finds, and reports on the pull request.
 
-1. Review code changes (PR diff or push diff)
-2. Build and start your application
-3. Drive verification through the enabled DevTools modes (browser by default, plus optional backend / Node.js)
-4. Record sessions and evidence to the IronBee collector
-5. Fix any issues found and re-verify
-6. Post a verification report on the PR with per-cycle Console links and downloadable evidence
+## Two ways to verify
+
+The verification itself can run in one of two places. Everything after it — the verdict, the fix, the commit, the report — is the same either way.
+
+| | **Platform** | **Local** |
+|---|---|---|
+| Where the agent runs | IronBee's infrastructure | this runner |
+| Model cost | IronBee's | your Anthropic account |
+| Runner setup | none — no Chromium, no DevTools install | Chromium, DevTools, MCP, ~2 minutes |
+| Needs an Anthropic credential | only to fix what it finds | yes |
+| Evidence | in the IronBee Console | Console **and** a workflow artifact |
+| Private repositories | needs the IronBee GitHub App installed | works with any checkout |
+
+`verification_mode` picks between them and defaults to `auto`:
+
+- the repository is **public** → **platform**. A public repository can be checked out without the GitHub App.
+- the repository is **private** and an Anthropic credential is set → **local**. A private repository needs the App, and whether it is installed is the one thing the action cannot check for free — so it uses the engine it knows can run. **If the App does cover your repository, set `verification_mode: platform`.**
+- the repository is **private** with no Anthropic credential → **platform**, because it is the only engine available. If the App is missing the run fails saying so — set `ironbee_bind_repository: false` to verify the application without a checkout instead.
+
+## What a run does
+
+1. Resolve the plan — mode, target, changeset — and refuse anything that cannot work, before installing anything
+2. Verify: start a platform job and follow it, or run the agent here
+3. Fix what a failing verdict reported, when `fix` is on and an Anthropic credential is set
+4. Commit the fixes — to the PR branch on a pull request, as a new PR otherwise
+5. Report on the pull request, with a link to the run in the IronBee Console
 
 ## Quick Start
 
@@ -106,6 +126,49 @@ The action requires these GitHub token permissions:
 | `pull-requests: write` | Yes | Post verification report comments on PRs, create fix PRs |
 | `issues: write` | Yes | Update PR comments via GitHub API |
 
+A pull request from a **fork** receives no secrets, so neither verification mode
+can run there. The action detects it and says so rather than failing on an empty
+key.
+
+## Give the job enough time
+
+The action prints the `timeout-minutes` its configuration needs, at the top of
+the run. Set at least that much on the job:
+
+```yaml
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+```
+
+It cannot check this for you — GitHub exposes a job's own timeout to nothing
+running inside it. When the step is killed mid-run the verification job is
+cancelled and the run reads as a platform failure, which is the one failure mode
+worth spending a line of configuration to avoid.
+
+## Protected deployments
+
+A preview deployment behind SSO or a protection bypass answers 401 or 403 to the
+verification, and the run would report on the login page. The action refuses that
+case in preflight, by name.
+
+An SSO redirect that answers **200** with a login page cannot be told apart from
+an application by a status code, so it is not caught — the verdict will describe
+the login page.
+
+Two ways past it:
+
+- **`app_secret_headers`** — if the protection can be bypassed with a header,
+  put it there. The value is encrypted before it is stored and is never returned
+  by the API. It is readable inside the run itself, which is the caller's own
+  verification of the caller's own deployment; do not use this field for
+  anything that protects more than the target.
+- **Verify on the runner instead** — set `app_start_command` and `app_port`, and
+  leave `app_url` empty. This verifies the application rather than the
+  deployment: edge configuration, rewrites and the built artifact are not
+  exercised.
+
 ## Usage Examples
 
 ### With Application Configuration
@@ -127,8 +190,8 @@ The action requires these GitHub token permissions:
   with:
     ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    prompt: 'Focus on the checkout flow and payment form validation'
-    max_turns: '30'
+    verification_prompt: 'Focus on the checkout flow and payment form validation'
+    claude_code_max_turns: '30'
 ```
 
 ### With OAuth Token
@@ -140,21 +203,21 @@ The action requires these GitHub token permissions:
     claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 ```
 
-### Keep IronBee Config in Repo
+### Commit the IronBee Config to the Repo
 
-By default, IronBee config files are committed to the repo so they can be used in local development. To exclude them:
+The files IronBee generates (`.ironbee/`, `.claude/`, `.mcp.json`, `.gitignore`) are kept out of the commits this action makes, because they are its working files rather than the change being verified. Turn that off to let a run commit the setup it generated — useful if you want it available for local development:
 
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
   with:
     ironbee_api_key: ${{ secrets.IRONBEE_API_KEY }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-    ironbee_exclude_files: 'true'
+    ironbee_exclude_files: 'false'
 ```
 
 ### With Custom IronBee Console URL
 
-The PR comment includes a link to the IronBee Console for the verification session. Override the default host (`console.ironbee.ai`) if you self-host:
+The PR comment includes a link to the IronBee Console for the verification session. The host is derived from `ironbee_collector_url`'s stage, falling back to `console.ironbee.ai`. Name it explicitly if you self-host:
 
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
@@ -166,7 +229,7 @@ The PR comment includes a link to the IronBee Console for the verification sessi
 
 ### Enable Additional DevTools Platforms
 
-By default only the browser DevTools mode runs. Opt into backend or Node.js modes when you want IronBee to verify those layers too:
+By default only the browser platform runs. Opt into the others when you want IronBee to verify those layers too. They apply to **local mode** — a platform run uses the platforms its harness declares:
 
 ```yaml
 - uses: ironbee-ai/ironbee-action@v1
@@ -176,6 +239,9 @@ By default only the browser DevTools mode runs. Opt into backend or Node.js mode
     ironbee_browser_devtools: 'true'
     ironbee_backend_devtools: 'true'
     ironbee_node_devtools: 'false'
+    ironbee_python_devtools: 'false'
+    # A PTY on the runner — enable it only when the CLI is what you are verifying.
+    ironbee_terminal_devtools: 'false'
 ```
 
 ### Raw Config Overrides
@@ -208,55 +274,77 @@ For any IronBee CLI setting not exposed as a dedicated input, pass a JSON object
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| **IronBee — auth & collector** | | | |
-| `ironbee_api_key` | Yes | | IronBee API key used to authenticate the collector |
-| `ironbee_collector_url` | No | `https://collector.service.ironbee.ai` | IronBee collector endpoint URL |
-| **IronBee — Console report links** | | | |
-| `ironbee_console_url` | No | `console.ironbee.ai` | IronBee Console hostname (no scheme) for session links in the report |
-| **IronBee — DevTools modes** | | | |
-| `ironbee_browser_devtools` | No | `true` | Enable browser DevTools verification |
-| `ironbee_backend_devtools` | No | `false` | Enable backend DevTools verification |
-| `ironbee_node_devtools` | No | `false` | Enable Node.js DevTools verification |
-| **IronBee — raw config escape hatch** | | | |
+| **Where the verification runs** | | | |
+| `verification_mode` | No | `auto` | `auto`, `platform`, or `local` — see [Two ways to verify](#two-ways-to-verify) |
+| **IronBee — account & endpoints** | | | |
+| `ironbee_api_key` | Yes | | IronBee API key. Authenticates the collector, and the platform API in platform mode |
+| `ironbee_api_url` | No | | IronBee API base URL. Empty uses the CLI default |
+| `ironbee_collector_url` | No | | IronBee collector endpoint URL. Empty uses the CLI default — and leaving it empty is what lets the CLI resolve every other service URL to the same stage, since an explicit one here is how it infers which stage that is |
+| `ironbee_console_url` | No | | IronBee Console hostname (no scheme) for session links in the report. Empty derives it from `ironbee_collector_url`, so a non-production collector does not produce production links |
+| `ironbee_cli_version` | No | `latest` | IronBee CLI version to install. Empty means `latest`, so an `inputs.x \|\| vars.X` chain that resolves to nothing still works |
+| `ironbee_project` | No | | Project the results attach to. Empty derives it from the git remote |
+| **IronBee — the verification job** (platform mode only) | | | |
+| `ironbee_bind_repository` | No | `true` | Bind the run to the repository so the agent reads the changeset. Turn it off to verify the application without repository context — what a private repository the IronBee GitHub App does not cover needs |
+| `ironbee_job_timeout_minutes` | No | | Run timeout for the verification job. Empty uses the API default |
+| **IronBee — DevTools platforms** (local mode only) | | | |
+| `ironbee_browser_devtools` | No | `true` | Web UI, DOM, console, a11y, screenshots, recording |
+| `ironbee_backend_devtools` | No | `false` | HTTP, gRPC, GraphQL, WebSocket, DB, logs |
+| `ironbee_node_devtools` | No | `false` | Node.js runtime — tracepoints, exceptions, variables, HTTP capture |
+| `ironbee_python_devtools` | No | `false` | Python runtime (debugpy) — tracepoints, exceptions, logs, thread dumps |
+| `ironbee_terminal_devtools` | No | `false` | CLI, REPL and TUI verification by driving a PTY. **This gives the agent a shell on the runner** — enable it only where that is the thing being verified |
+| **IronBee — config & repo hygiene** | | | |
 | `ironbee_extra_config` | No | | Raw IronBee config (JSON) deep-merged into `.ironbee/config.json`; user keys win |
-| **IronBee — CLI install / repo behavior** | | | |
-| `ironbee_cli_version` | No | `latest` | IronBee CLI version to install |
-| `ironbee_exclude_files` | No | `false` | Exclude IronBee config files from commits |
+| `ironbee_exclude_files` | No | `true` | Keep IronBee-generated files (`.ironbee/`, `.claude/`, `.mcp.json`, `.gitignore`) out of the commits this action makes. Turn it off to let a run commit the IronBee setup it generated |
 | **Claude Code — auth** | | | |
 | `anthropic_api_key` | Yes* | | Anthropic API key for Claude Code |
 | `claude_code_oauth_token` | No* | | Claude Code OAuth token (alternative auth) |
-| **Claude Code — install & runtime** | | | |
-| `claude_code_cli_version` | No | `latest` | Claude Code CLI version to install |
-| `model` | No | | Claude model override |
-| `max_turns` | No | `100` | Maximum conversation turns |
-| `prompt` | No | | Additional instructions for the agent |
-| `claude_args` | No | | Additional Claude Code CLI arguments |
+| **Claude Code — install & runtime** (local mode only) | | | |
+| `claude_code_cli_version` | No | `latest` | Claude Code CLI version to install. Empty means `latest` |
+| `claude_code_model` | No | | Claude model for the agent that runs on this runner. Platform mode uses the platform default |
+| `claude_code_max_turns` | No | `100` | Maximum conversation turns for the agent that runs on this runner |
+| `claude_code_args` | No | | Additional Claude Code CLI arguments |
+| **What to verify, and what to do about it** | | | |
+| `verification_prompt` | No | | Additional instructions for the verification agent. Reaches whichever engine runs |
+| `verification_apply_fix` | No | `true` | Apply fixes for the issues a failing verification reports. Needs an Anthropic credential; without one the run verifies and reports only |
 | **Application under test** | | | |
 | `app_install_command` | No | | Command to install dependencies |
 | `app_build_command` | No | | Command to build the application |
 | `app_start_command` | No | | Command to start the application |
-| `app_url` | No | | Application URL for verification |
+| `app_url` | No | | Application URL for verification. A **routable** URL is verified as a deployment; a `localhost` one means the application runs on this runner and is reached through a reverse tunnel |
+| `app_port` | No | | Local port the application listens on, for a tunnelled target. Required when `app_start_command` is set without an `app_url`, or when `app_url` points at localhost without a port. No default — a guessed port tunnels to nothing. The port in `app_url` wins when both name one |
+| `app_restart_command` | No | | Command that restarts the application so it picks up the fixes, run between the fix round and the re-verification. Empty stops the process this action started and re-runs `app_start_command` — right only when that command runs the application itself. One that hands off (docker compose, a process manager) leaves the pre-fix code running, and the re-verification then reports a confident result about code that no longer exists. For a compose project: `docker compose up -d --build` |
+| `app_logs_command` | No | | Command that prints the application's own logs, captured into the evidence artifact. Needed whenever `app_start_command` hands off — what the action captures then is lifecycle chatter, not the application, so a service that died or stopped consuming leaves no trace. For compose: `docker compose logs --no-color --tail=2000` |
+| `app_wait_seconds` | No | | How long to wait for the local application to accept connections. Empty uses the CLI default (60s) |
+| `app_headers` | No | | Request headers for a deployed URL, one `Name: value` per line. **Non-secret values only** — they are stored in the clear and readable by anyone with any of the account's credentials |
+| `app_secret_headers` | No | | Request headers whose values are secret — a deployment-protection bypass, an environment token. Same `Name: value` per line, from a GitHub secret. Encrypted before storage and never read back |
 | **GitHub** | | | |
 | `github_token` | No | `github.token` | GitHub token for PR operations |
-| **Action — general behavior** | | | |
+| **Action — general behaviour** | | | |
 | `working_directory` | No | `.` | Working directory for verification |
-| `verbose` | No | `false` | Enable verbose CI logging |
+| `verbose` | No | `false` | Log tool responses, the prompt, the artifact list and verdict details |
 
-*One of `anthropic_api_key` or `claude_code_oauth_token` is required.
+Every `true`/`false` input also accepts `1`/`0`, `yes`/`no` and `on`/`off`. Anything else
+fails the run naming the input — GitHub does not type-check action inputs, so a value
+nobody validates is a setting that silently did not apply.
+
+*Required for local mode, and for fixing in platform mode. A platform run that only verifies needs neither.
 
 ## Outputs
 
 | Output | Description |
 |--------|-------------|
-| `verdict` | Verification result: `pass`, `fail`, or `unknown` |
-| `artifacts_url` | Download URL for verification evidence (screenshots, recordings) |
+| `verdict` | `pass`, `fail`, `not_applicable`, or `unknown` |
+| `mode` | Where the verification ran: `platform` or `local` |
+| `job_id` | Verification job id — platform mode only |
+| `job_url` | IronBee Console link for the run — platform mode only, once the job has started |
+| `artifacts_url` | Download URL for verification evidence — **local mode only**. In platform mode the evidence is captured on the platform and lives in the Console; this output is empty |
 
 ## How It Works
 
 ### Verification Flow
 
 1. **Setup** — Installs `@ironbee-ai/cli`, `@anthropic-ai/claude-code`, `@ironbee-ai/devtools`, and Playwright Chromium (cached across runs)
-2. **Configure** — Writes `.ironbee/config.json` with the collector URL, per-mode DevTools enable flags, and per-mode MCP `LOG_FILE` paths under `.ironbee/artifacts/` (deep-merging `ironbee_extra_config` on top), then runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config. The IronBee API key is passed via the `IRONBEE_API_KEY` env var (not written to disk) and inherited by hooks and MCP subprocesses
+2. **Configure** — Writes `.ironbee/config.json` with the collector URL, the DevTools platform enable flags, and the MCP `LOG_FILE` paths under `.ironbee/artifacts/` (deep-merging `ironbee_extra_config` on top), then runs `ironbee install --client claude` to set up hooks, skills, rules, and MCP config. The IronBee API key is passed via the `IRONBEE_API_KEY` env var (not written to disk) and inherited by hooks and MCP subprocesses
 3. **Verify** — Claude Code runs `/ironbee-verify` (or `/ironbee-verify full` for manual/scheduled) which:
    - Reviews the code diff (push/PR) or tests the full app (manual/scheduled)
    - Builds and starts the application
@@ -268,8 +356,16 @@ For any IronBee CLI setting not exposed as a dedicated input, pass a JSON object
 
 ### Fix Behavior
 
-- **PR trigger** — Fixes are committed directly to the PR branch
-- **Push / Manual / Scheduled** — If issues are found, a fix PR is created automatically
+- **PR trigger** — fixes are committed and pushed to the PR branch
+- **Push / Manual / Scheduled** — fixes go to a new branch and a PR is opened
+
+The action performs the commit and the push itself. The agent only edits files.
+
+### Re-verification after a fix
+
+One fix round per run, and a re-verification only where it can mean something.
+
+A **tunnelled** target is re-verified: the application is restarted with the fixed code and a second verification runs. A **deployed URL** is not — the deployment still serves the code that was deployed, so a second run would verify the same bytes and report a result unrelated to the fix. There the loop closes when the fix is deployed and the workflow runs again.
 
 ### Evidence Collection
 
