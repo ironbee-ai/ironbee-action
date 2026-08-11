@@ -91,7 +91,10 @@ for exactly that reason.
 The repository binding measures the changeset from the first base that says
 something: the push event's own `before` (it spans every commit in the push, so
 it must keep precedence or a multi-commit push silently narrows to its tip),
-then the commit's first parent, then nothing. `before` is skipped both when this
+then the commit's first parent, then nothing. Every other event — a manual
+dispatch, a schedule — goes straight to the parent: a dispatch is nearly always
+a push being re-run with one setting changed, and a run with no changeset
+answers a different question than the one it repeats. `before` is skipped both when this
 checkout cannot resolve it and when it resolves to a tree identical to the
 commit's — an empty changeset is not an answer, it is a rewrite measured against
 itself, and the parent is strictly more to review rather than less. The parent step matters more than it looks

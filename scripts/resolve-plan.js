@@ -362,11 +362,24 @@ function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, b
     }
     return ['--commit', String(sha).trim(), '--no-diff'];
   }
-  // Every other event — a manual dispatch, a schedule — gets the commit and no
-  // changeset. The parent is available here too and is deliberately not used:
-  // "the tip commit" is what a push is about, while a dispatch is about the
-  // branch as it stands, and guessing its last commit was the interesting one
-  // would point the agent at a change nobody asked about.
+  // Every other event — a manual dispatch, a schedule — measures from the
+  // commit's parent, the same base a push falls back to.
+  //
+  // It was `--no-diff` on the reasoning that a dispatch is about the branch as
+  // it stands rather than about its last commit. That reads well and does not
+  // survive contact with why anyone dispatches: re-running the verification on
+  // the change that is already there — with fixing off, in local mode, after a
+  // configuration change. A run with no changeset answers a different question
+  // than the push it is repeating, and the difference is invisible in the
+  // report.
+  //
+  // Nothing is traded for it. Against a branch whose tip is the change, the
+  // parent is that change; against one whose tip is unrelated, it is a small
+  // recent diff rather than nothing — still more to look at than a run told
+  // only "here is a repository".
+  if (present(sha) && present(parentSha)) {
+    return ['--commit', String(sha).trim(), '--base', String(parentSha).trim()];
+  }
   if (present(sha)) {
     return ['--commit', String(sha).trim(), '--no-diff'];
   }

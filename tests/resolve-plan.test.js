@@ -306,15 +306,23 @@ test('binding: a usable base outranks the parent', () => {
   );
 });
 
-// The parent is available here too and is deliberately not used: a push is
-// about its tip commit, while a dispatch is about the branch as it stands.
-test('binding: a manual or scheduled run binds the commit with no changeset', () => {
+// A dispatch is nearly always a push being re-run — with fixing off, in local
+// mode, after a configuration change — and a run with no changeset answers a
+// different question than the one it repeats, invisibly.
+test('binding: a manual or scheduled run measures from the commit parent', () => {
   for (const eventName of ['workflow_dispatch', 'schedule']) {
     assert.deepEqual(
       resolveRepoBinding({ eventName, sha: 'a'.repeat(40), parentSha: 'c'.repeat(40) }),
-      ['--commit', 'a'.repeat(40), '--no-diff'],
+      ['--commit', 'a'.repeat(40), '--base', 'c'.repeat(40)],
     );
   }
+});
+
+test('binding: a manual run with no parent still binds the commit', () => {
+  assert.deepEqual(
+    resolveRepoBinding({ eventName: 'workflow_dispatch', sha: 'a'.repeat(40), parentSha: '' }),
+    ['--commit', 'a'.repeat(40), '--no-diff'],
+  );
 });
 
 // A private repository the App does not cover fails at the agent's front door
