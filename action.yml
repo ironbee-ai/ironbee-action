@@ -10,144 +10,177 @@ inputs:
   # ── Where the verification runs ────────────────────────────────────
   verification_mode:
     description: >-
-      Where the verification runs. "platform" starts a verification job on the
-      IronBee platform and follows it; "local" runs the agent on this runner
-      with your own Anthropic credential; "auto" picks platform for a public
-      repository, and local for a private one when an Anthropic credential is
-      set (set "platform" explicitly if the IronBee GitHub App covers it).
+      Where the verification runs — one of: auto, platform, local.
+      "platform" starts a verification job on the IronBee platform and follows
+      it; "local" runs the agent on this runner with your own Anthropic
+      credential; "auto" picks platform for a public repository, and local for a
+      private one when an Anthropic credential is set (set "platform" explicitly
+      if the IronBee GitHub App covers it).
     required: false
     default: 'auto'
 
-  # ── IronBee — auth & collector ─────────────────────────────────────
+  # ── IronBee — account & endpoints ──────────────────────────────────
   ironbee_api_key:
-    description: 'IronBee API key (used to authenticate the collector)'
+    description: 'IronBee API key. Authenticates the collector, and the platform API in platform mode.'
     required: true
-  ironbee_collector_url:
-    description: 'IronBee collector endpoint URL'
-    required: false
-    default: 'https://collector.service.ironbee.ai'
-
-  # ── IronBee — Console report links ─────────────────────────────────
-  ironbee_console_url:
-    description: 'IronBee Console hostname (without scheme) used to build session links in the report'
-    required: false
-    default: 'console.ironbee.ai'
   ironbee_api_url:
-    description: 'IronBee API base URL. Leave empty to use the CLI default.'
+    description: 'IronBee API base URL. Empty uses the CLI default.'
     required: false
     default: ''
-  bind_repository:
+  ironbee_collector_url:
     description: >-
-      Bind the run to the repository so the agent reads the changeset. Turn it
-      off to verify the application without repository context — which is what a
-      private repository the IronBee GitHub App does not cover needs.
+      IronBee collector endpoint URL. Empty uses the CLI default — and leaving it
+      empty is what lets the CLI resolve every other service URL to the same
+      stage, since an explicit one here is how it infers which stage that is.
+    required: false
+    default: ''
+  ironbee_console_url:
+    description: >-
+      IronBee Console hostname (no scheme) used to build session links in the
+      report. Empty derives it from ironbee_collector_url, so a non-production
+      collector does not produce production links.
+    required: false
+    default: ''
+  ironbee_cli_version:
+    description: 'IronBee CLI version to install (e.g. "1.0.0", "next", "latest").'
+    required: false
+    default: 'latest'
+  ironbee_project:
+    description: 'Project the results attach to. Empty derives it from the git remote.'
+    required: false
+    default: ''
+
+  # ── IronBee — the verification job (platform mode only) ────────────
+  ironbee_bind_repository:
+    description: >-
+      One of: true, false. Bind the run to the repository so the agent reads the
+      changeset. Turn it off to verify the application without repository
+      context — which is what a private repository the IronBee GitHub App does
+      not cover needs.
     required: false
     default: 'true'
-  ironbee_project:
-    description: 'Project the results attach to. Leave empty to derive it from the git remote.'
-    required: false
-    default: ''
-  job_timeout_minutes:
-    description: 'Run timeout for a platform verification job. Leave empty to use the API default.'
+  ironbee_job_timeout_minutes:
+    description: 'Run timeout for the verification job. Empty uses the API default.'
     required: false
     default: ''
 
-  # ── IronBee — DevTools modes (per-platform enable flags) ───────────
+  # ── IronBee — DevTools platforms (local mode only) ─────────────────
   ironbee_browser_devtools:
-    description: 'Enable browser DevTools verification (browser MCP)'
+    description: 'One of: true, false. Web UI, DOM, console, a11y, screenshots, recording.'
     required: false
     default: 'true'
   ironbee_backend_devtools:
-    description: 'Enable backend DevTools verification (backend MCP)'
+    description: 'One of: true, false. HTTP, gRPC, GraphQL, WebSocket, DB, logs.'
     required: false
     default: 'false'
   ironbee_node_devtools:
-    description: 'Enable Node.js DevTools verification (node MCP)'
+    description: 'One of: true, false. Node.js runtime — tracepoints, exceptions, variables, HTTP capture.'
+    required: false
+    default: 'false'
+  ironbee_python_devtools:
+    description: 'One of: true, false. Python runtime (debugpy) — tracepoints, exceptions, logs, thread dumps.'
+    required: false
+    default: 'false'
+  ironbee_terminal_devtools:
+    description: >-
+      One of: true, false. CLI, REPL and TUI verification by driving a PTY.
+      This gives the agent a shell on the runner — enable it only where that is
+      the thing being verified.
     required: false
     default: 'false'
 
-  # ── IronBee — raw config escape hatch ──────────────────────────────
+  # ── IronBee — config & repo hygiene ────────────────────────────────
   ironbee_extra_config:
-    description: 'Raw IronBee config as a JSON string. Deep-merged into the generated .ironbee/config.json (user keys win over defaults).'
+    description: 'Raw IronBee config as JSON. Deep-merged into the generated .ironbee/config.json; user keys win.'
     required: false
     default: ''
-
-  # ── IronBee — CLI install / repo behavior ──────────────────────────
-  ironbee_cli_version:
-    description: 'IronBee CLI version to install (e.g., "0.4.1", "latest")'
-    required: false
-    default: 'latest'
   ironbee_exclude_files:
-    description: 'Exclude IronBee config files from commits (set true to prevent .ironbee/, .claude/, .mcp.json from being committed)'
+    description: >-
+      One of: true, false. Keep IronBee-generated files (.ironbee/, .claude/,
+      .mcp.json, .gitignore) out of the commits this action makes. On by
+      default: they are this action's working files, not the change being
+      verified, and a commit only happens when a verification fails and a fix
+      is produced — so leaving them in adds machinery nobody wrote to a bug-fix
+      diff, on runs nobody can predict. Turn it off to let a run commit the
+      IronBee setup it generated.
     required: false
-    default: 'false'
+    default: 'true'
 
   # ── Claude Code — auth ─────────────────────────────────────────────
   anthropic_api_key:
-    description: 'Anthropic API key for Claude Code'
+    description: 'Anthropic API key. Required for local mode, and for fixing in platform mode.'
     required: false
   claude_code_oauth_token:
-    description: 'Claude Code OAuth token (alternative to API key)'
+    description: 'Claude Code OAuth token — the alternative to the API key.'
     required: false
 
-  # ── Claude Code — install & runtime ────────────────────────────────
+  # ── Claude Code — install & runtime (local mode only) ──────────────
   claude_code_cli_version:
-    description: 'Claude Code CLI version to install (e.g., "1.0.0", "latest")'
+    description: 'Claude Code CLI version to install (e.g. "1.0.0", "latest").'
     required: false
     default: 'latest'
-  model:
-    description: 'Claude model to use (e.g., "claude-sonnet-4-5-20250514")'
+  claude_code_model:
+    description: 'Claude model for the agent that runs on this runner. Platform mode uses the platform default.'
     required: false
     default: ''
-  max_turns:
-    description: 'Maximum conversation turns for Claude Code'
+  claude_code_max_turns:
+    description: 'Maximum conversation turns for the agent that runs on this runner.'
     required: false
     default: '100'
-  prompt:
-    description: 'Additional instructions for the verification agent'
-    required: false
-    default: ''
-  claude_args:
-    description: 'Additional Claude Code CLI arguments'
+  claude_code_args:
+    description: 'Additional Claude Code CLI arguments.'
     required: false
     default: ''
 
-  # ── Fixing what the verification finds ─────────────────────────────
-  fix:
-    description: 'Fix the issues a failing verification reports. Needs an Anthropic credential.'
+  # ── What to verify, and what to do about it ────────────────────────
+  verification_prompt:
+    description: 'Additional instructions for the verification agent. Reaches whichever engine runs.'
+    required: false
+    default: ''
+  verification_apply_fix:
+    description: >-
+      One of: true, false. Apply fixes for the issues a failing verification
+      reports. Needs an Anthropic credential; without one the run verifies and
+      reports only.
     required: false
     default: 'true'
 
   # ── Application under test ─────────────────────────────────────────
   app_install_command:
-    description: 'Command to install application dependencies (e.g., "npm ci")'
+    description: 'Command to install application dependencies (e.g. "npm ci").'
     required: false
     default: ''
   app_build_command:
-    description: 'Command to build the application before verification (e.g., "npm run build")'
+    description: 'Command to build the application before verification (e.g. "npm run build").'
     required: false
     default: ''
   app_start_command:
-    description: 'Command to start the application (e.g., "npm run dev")'
+    description: 'Command to start the application (e.g. "npm run dev").'
     required: false
     default: ''
   app_url:
-    description: 'Application URL for browser verification (e.g., "http://localhost:3000")'
+    description: >-
+      Application URL. A routable URL is verified as a deployment; a localhost
+      one means the application runs on this runner and is reached through a
+      reverse tunnel.
     required: false
     default: ''
   app_port:
     description: >-
-      Local port the application listens on. Used when the application runs on
-      this runner and is reached through a reverse tunnel — either because
-      app_url points at localhost, or because only app_start_command is set.
+      Local port the application listens on, for a tunnelled target. Required
+      when app_start_command is set without an app_url, or when app_url points
+      at localhost without a port. No default: a guessed port tunnels to
+      nothing and fails deep inside the run, and a default here would also be
+      indistinguishable from a port someone typed. The port in app_url wins
+      when both name one.
     required: false
-    default: '3000'
+    default: ''
   app_wait_seconds:
-    description: 'How long to wait for the local application to accept connections. Empty uses the CLI default.'
+    description: 'How long to wait for the local application to accept connections. Empty uses the CLI default (60s).'
     required: false
     default: ''
   app_headers:
-    description: 'Request headers for a deployed URL, one per line as "Name: value". Non-secret values only.'
+    description: 'Request headers for a deployed URL, one "Name: value" per line. Non-secret values only.'
     required: false
     default: ''
   app_secret_headers:
@@ -160,17 +193,17 @@ inputs:
 
   # ── GitHub ─────────────────────────────────────────────────────────
   github_token:
-    description: 'GitHub token for PR operations'
+    description: 'GitHub token for PR operations.'
     required: false
     default: ${{ github.token }}
 
-  # ── Action — general behavior ──────────────────────────────────────
+  # ── Action — general behaviour ─────────────────────────────────────
   working_directory:
-    description: 'Working directory for verification'
+    description: 'Working directory for verification.'
     required: false
     default: '.'
   verbose:
-    description: 'Enable verbose logging (tool responses, prompt, artifact list, verdict details)'
+    description: 'One of: true, false. Log tool responses, the prompt, the artifact list and verdict details.'
     required: false
     default: 'false'
 
@@ -228,15 +261,22 @@ runs:
         INPUT_APP_HEADERS: ${{ inputs.app_headers }}
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
         INPUT_IRONBEE_PROJECT: ${{ inputs.ironbee_project }}
-        INPUT_BIND_REPOSITORY: ${{ inputs.bind_repository }}
-        INPUT_JOB_TIMEOUT_MINUTES: ${{ inputs.job_timeout_minutes }}
-        INPUT_FIX: ${{ inputs.fix }}
-        INPUT_MODEL: ${{ inputs.model }}
-        INPUT_MAX_TURNS: ${{ inputs.max_turns }}
-        INPUT_CLAUDE_ARGS: ${{ inputs.claude_args }}
+        INPUT_IRONBEE_CONSOLE_URL: ${{ inputs.ironbee_console_url }}
+        INPUT_IRONBEE_COLLECTOR_URL: ${{ inputs.ironbee_collector_url }}
+        INPUT_IRONBEE_BIND_REPOSITORY: ${{ inputs.ironbee_bind_repository }}
+        INPUT_IRONBEE_JOB_TIMEOUT_MINUTES: ${{ inputs.ironbee_job_timeout_minutes }}
+        INPUT_VERIFICATION_APPLY_FIX: ${{ inputs.verification_apply_fix }}
+        INPUT_CLAUDE_CODE_MODEL: ${{ inputs.claude_code_model }}
+        INPUT_CLAUDE_CODE_MAX_TURNS: ${{ inputs.claude_code_max_turns }}
+        INPUT_CLAUDE_CODE_ARGS: ${{ inputs.claude_code_args }}
         INPUT_IRONBEE_BROWSER_DEVTOOLS: ${{ inputs.ironbee_browser_devtools }}
         INPUT_IRONBEE_BACKEND_DEVTOOLS: ${{ inputs.ironbee_backend_devtools }}
         INPUT_IRONBEE_NODE_DEVTOOLS: ${{ inputs.ironbee_node_devtools }}
+        INPUT_IRONBEE_PYTHON_DEVTOOLS: ${{ inputs.ironbee_python_devtools }}
+        INPUT_IRONBEE_TERMINAL_DEVTOOLS: ${{ inputs.ironbee_terminal_devtools }}
+        INPUT_IRONBEE_EXCLUDE_FILES: ${{ inputs.ironbee_exclude_files }}
+        INPUT_IRONBEE_EXTRA_CONFIG: ${{ inputs.ironbee_extra_config }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
         REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
         IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
         EVENT_NAME: ${{ github.event_name }}
@@ -300,7 +340,7 @@ runs:
         # Resolve "latest" via `npm view` so the install pins to an explicit
         # version — avoids any dist-tag / CDN cache surprises that can make
         # `npm install -g @ironbee-ai/cli` silently pull an older release.
-        if [ "${{ inputs.ironbee_cli_version }}" = "latest" ]; then
+        if [ -z "${{ inputs.ironbee_cli_version }}" ] || [ "${{ inputs.ironbee_cli_version }}" = "latest" ]; then
           VERSION="$(npm view @ironbee-ai/cli version)"
         else
           VERSION="${{ inputs.ironbee_cli_version }}"
@@ -322,6 +362,8 @@ runs:
         BROWSER_DEVTOOLS_ENABLE: ${{ inputs.ironbee_browser_devtools }}
         BACKEND_DEVTOOLS_ENABLE: ${{ inputs.ironbee_backend_devtools }}
         NODE_DEVTOOLS_ENABLE: ${{ inputs.ironbee_node_devtools }}
+        PYTHON_DEVTOOLS_ENABLE: ${{ inputs.ironbee_python_devtools }}
+        TERMINAL_DEVTOOLS_ENABLE: ${{ inputs.ironbee_terminal_devtools }}
         EXTRA_CONFIG: ${{ inputs.ironbee_extra_config }}
       run: |
         mkdir -p .ironbee/artifacts
@@ -330,16 +372,37 @@ runs:
           const dir = process.env.ARTIFACTS_DIR;
           const toBool = (v) => /^(true|1|yes|on)$/i.test(String(v || "").trim());
           const config = {
-            collector: {
-              url: process.env.IRONBEE_COLLECTOR_URL,
-            },
+            // The key is omitted rather than written empty when nobody named a
+            // collector: an explicit `collector.url` is what the CLI infers its
+            // service domain from, so writing one here would pin every other
+            // service URL to whatever stage this action guessed.
+            ...(process.env.IRONBEE_COLLECTOR_URL
+              ? { collector: { url: process.env.IRONBEE_COLLECTOR_URL } }
+              : {}),
             // Cycle gating — drives whether the per-platform MCP server is
             // registered in .mcp.json by `ironbee install`.
             browser: { enable: toBool(process.env.BROWSER_DEVTOOLS_ENABLE) },
             backend: { enable: toBool(process.env.BACKEND_DEVTOOLS_ENABLE) },
             node:    { enable: toBool(process.env.NODE_DEVTOOLS_ENABLE) },
-            // MCP env (LOG_FILE etc.) merged into each MCP server entry by
-            // the CLI when the corresponding cycle is enabled above.
+            python:  { enable: toBool(process.env.PYTHON_DEVTOOLS_ENABLE) },
+            terminal:{ enable: toBool(process.env.TERMINAL_DEVTOOLS_ENABLE) },
+            // MCP env, merged into the server entry the CLI writes into
+            // .mcp.json for each cycle enabled above.
+            //
+            // Written twice because the override key follows the *physical*
+            // server name, and the CLI has two layouts: one composed server
+            // serving every enabled cycle (key `ironbeeDevTools`), or one
+            // server per cycle (key `<cycle>DevTools`). A composed CLI reads
+            // only the first block and a per-cycle CLI only the second, so
+            // both are written and the pinned version decides which applies.
+            // Writing one alone is how BROWSER_CHROMIUM_SANDBOX silently stops
+            // being applied on a CLI upgrade.
+            ironbeeDevTools: {
+              env: {
+                LOG_FILE: dir + "/ironbee-devtools-mcp.log",
+                BROWSER_CHROMIUM_SANDBOX: "false",
+              },
+            },
             browserDevTools: {
               env: {
                 LOG_FILE: dir + "/ironbee-browser-devtools-mcp.log",
@@ -354,6 +417,12 @@ runs:
             },
             nodeDevTools: {
               env: { LOG_FILE: dir + "/ironbee-node-devtools-mcp.log" },
+            },
+            pythonDevTools: {
+              env: { LOG_FILE: dir + "/ironbee-python-devtools-mcp.log" },
+            },
+            terminalDevTools: {
+              env: { LOG_FILE: dir + "/ironbee-terminal-devtools-mcp.log" },
             },
           };
           const extra = (process.env.EXTRA_CONFIG || "").trim();
@@ -390,7 +459,7 @@ runs:
       env:
         IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
       run: |
-        if [ "${{ inputs.ironbee_exclude_files }}" = "true" ]; then
+        if [ "${{ steps.plan.outputs.exclude_files }}" = "true" ]; then
           echo ".mcp.json" >> .git/info/exclude
           echo ".ironbee/" >> .git/info/exclude
           echo ".claude/settings.json" >> .git/info/exclude
@@ -427,7 +496,7 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
-        USER_PROMPT: ${{ inputs.prompt }}
+        USER_PROMPT: ${{ inputs.verification_prompt }}
       run: |
         ARTIFACTS_DIR="$(pwd)/.ironbee/artifacts"
 
@@ -530,7 +599,7 @@ runs:
           echo "PROMPT_DELIM"
         } >> "$GITHUB_OUTPUT"
 
-        if [ "${{ inputs.verbose }}" = "true" ]; then
+        if [ "${{ steps.plan.outputs.verbose }}" = "true" ]; then
           echo "::group::Verification prompt"
           cat "$PROMPT"
           echo "::endgroup::"
@@ -551,7 +620,7 @@ runs:
       run: |
         # Resolve "latest" via `npm view` so the install pins to an explicit
         # version — same rationale as for @ironbee-ai/cli above.
-        if [ "${{ inputs.claude_code_cli_version }}" = "latest" ]; then
+        if [ -z "${{ inputs.claude_code_cli_version }}" ] || [ "${{ inputs.claude_code_cli_version }}" = "latest" ]; then
           VERSION="$(npm view @anthropic-ai/claude-code version)"
         else
           VERSION="${{ inputs.claude_code_cli_version }}"
@@ -607,7 +676,7 @@ runs:
       env:
         IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
         API_URL_OVERRIDE: ${{ inputs.ironbee_api_url }}
-        USER_PROMPT: ${{ inputs.prompt }}
+        USER_PROMPT: ${{ inputs.verification_prompt }}
         CLI_ARGS: ${{ steps.plan.outputs.cli_args }}
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
       run: |
@@ -675,7 +744,7 @@ runs:
       working-directory: ${{ inputs.working_directory }}
       run: |
         node "${{ github.action_path }}/scripts/read-job.js" \
-          .ironbee/artifacts/job.json "${{ inputs.ironbee_console_url }}"
+          .ironbee/artifacts/job.json "${{ steps.plan.outputs.console_url }}"
 
     # ── Run Claude Code with IronBee ───────────────────────────────────
     - name: Run Claude Code verification
@@ -697,11 +766,11 @@ runs:
         LOG_FILE="$(pwd)/.ironbee/artifacts/claude-output.log"
 
         cat "$PROMPT_FILE" | claude --output-format stream-json --verbose \
-          --max-turns ${{ inputs.max_turns }} \
+          --max-turns ${{ inputs.claude_code_max_turns }} \
           --dangerously-skip-permissions \
-          ${{ inputs.model != '' && format('--model {0}', inputs.model) || '' }} \
-          ${{ inputs.claude_args }} \
-          2>&1 | tee "$LOG_FILE.raw" | jq -r --unbuffered --arg verbose "${{ inputs.verbose }}" '
+          ${{ inputs.claude_code_model != '' && format('--model {0}', inputs.claude_code_model) || '' }} \
+          ${{ inputs.claude_code_args }} \
+          2>&1 | tee "$LOG_FILE.raw" | jq -r --unbuffered --arg verbose "${{ steps.plan.outputs.verbose }}" '
             if .type == "assistant" and .message.content then
               (.message.content[] |
                 if .type == "text" then "🤖 " + .text
@@ -735,7 +804,7 @@ runs:
       if: steps.plan.outputs.mode == 'platform' && steps.plan.outputs.can_fix == 'true' && steps.job.outputs.verdict == 'fail'
       shell: bash
       run: |
-        if [ "${{ inputs.claude_code_cli_version }}" = "latest" ]; then
+        if [ -z "${{ inputs.claude_code_cli_version }}" ] || [ "${{ inputs.claude_code_cli_version }}" = "latest" ]; then
           VERSION="$(npm view @anthropic-ai/claude-code version)"
         else
           VERSION="${{ inputs.claude_code_cli_version }}"
@@ -863,11 +932,11 @@ runs:
       working-directory: ${{ inputs.working_directory }}
       run: |
         node "${{ github.action_path }}/scripts/read-job.js" \
-          .ironbee/artifacts/job.json "${{ inputs.ironbee_console_url }}"
+          .ironbee/artifacts/job.json "${{ steps.plan.outputs.console_url }}"
 
     # ── Discard IronBee-generated file changes ───────────────────────
     - name: Discard IronBee config changes
-      if: always() && steps.plan.outputs.mode == 'local' && inputs.ironbee_exclude_files == 'true'
+      if: always() && steps.plan.outputs.mode == 'local' && steps.plan.outputs.exclude_files == 'true'
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       run: |
@@ -889,7 +958,7 @@ runs:
         if [ -n "$VERDICT_FILE" ] && [ -f "$VERDICT_FILE" ]; then
           STATUS=$(node -e "const v=JSON.parse(require('fs').readFileSync('$VERDICT_FILE','utf8'));console.log(v.status||'unknown')" 2>/dev/null || echo "unknown")
           SESSION_ID=$(basename "$(dirname "$VERDICT_FILE")")
-          if [ "${{ inputs.verbose }}" = "true" ]; then
+          if [ "${{ steps.plan.outputs.verbose }}" = "true" ]; then
             echo "::group::Verdict details"
             cat "$VERDICT_FILE" | node -e "process.stdin.on('data',d=>console.log(JSON.stringify(JSON.parse(d),null,2)))" 2>/dev/null || cat "$VERDICT_FILE"
             echo "::endgroup::"
@@ -964,7 +1033,7 @@ runs:
           HAS_ARTIFACTS=true
         fi
 
-        if [ "${{ inputs.verbose }}" = "true" ] && [ "$HAS_ARTIFACTS" = "true" ]; then
+        if [ "${{ steps.plan.outputs.verbose }}" = "true" ] && [ "$HAS_ARTIFACTS" = "true" ]; then
           echo "::group::Collected artifacts"
           find "$ARTIFACTS_DIR" -type f | sort
           echo "::endgroup::"
@@ -1000,7 +1069,7 @@ runs:
           node "${{ github.action_path }}/scripts/build-report.js" \
             --job .ironbee/artifacts/job.json \
             --version "${{ steps.install-cli.outputs.ironbee-version }}" \
-            --console "${{ inputs.ironbee_console_url }}" \
+            --console "${{ steps.plan.outputs.console_url }}" \
             --job-url "${{ steps.job-reverified.outputs.job_url || steps.job.outputs.job_url }}" \
             --failure-code "${{ steps.job.outputs.failure_code }}" \
             > "$BODY_FILE"
@@ -1009,7 +1078,7 @@ runs:
             ".ironbee/artifacts" \
             "${{ steps.install-cli.outputs.ironbee-version }}" \
             "${{ steps.upload-artifacts.outputs.artifact-url }}" \
-            "${{ inputs.ironbee_console_url }}" \
+            "${{ steps.plan.outputs.console_url }}" \
             "${{ steps.verdict.outputs.session_id }}" \
             > "$BODY_FILE"
         fi
@@ -1060,7 +1129,7 @@ runs:
         # Always unstaged: this action's own working files. The rest only when
         # the caller asked for the IronBee setup to stay out of their commits.
         git reset HEAD -- .ironbee/ 2>/dev/null || true
-        if [ "${{ inputs.ironbee_exclude_files }}" = "true" ]; then
+        if [ "${{ steps.plan.outputs.exclude_files }}" = "true" ]; then
           git reset HEAD -- .mcp.json .gitignore .claude/ 2>/dev/null || true
         fi
 
@@ -1108,7 +1177,7 @@ runs:
         BRANCH="ironbee/fix-${SHORT_SHA}-${GITHUB_RUN_ID}"
 
         git add -A
-        if [ "${{ inputs.ironbee_exclude_files }}" = "true" ]; then
+        if [ "${{ steps.plan.outputs.exclude_files }}" = "true" ]; then
           git reset HEAD -- .mcp.json .gitignore .claude/ 2>/dev/null || true
         fi
         git reset HEAD -- .ironbee/ 2>/dev/null || true

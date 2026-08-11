@@ -12,6 +12,8 @@ const {
   timeoutFloorMinutes,
   parseHeaders,
   emitSecretHeaderArgs,
+  parseBoolean,
+  resolveConsoleUrl,
 } = require('../scripts/resolve-plan.js');
 
 /** A configuration that resolves cleanly, so each test changes one thing. */
@@ -400,8 +402,8 @@ test('plan: an explicit project overrides the derived one', () => {
 test('plan: local-only inputs warn in platform mode', () => {
   const plan = resolvePlan(input({ model: 'claude-sonnet-5', maxTurns: '50' }));
   assert.equal(plan.ok, true);
-  assert.match(plan.warnings.join(' '), /model/);
-  assert.match(plan.warnings.join(' '), /max_turns/);
+  assert.match(plan.warnings.join(' '), /claude_code_model/);
+  assert.match(plan.warnings.join(' '), /claude_code_max_turns/);
 });
 
 test('plan: local-only inputs are silent in local mode', () => {
@@ -409,6 +411,135 @@ test('plan: local-only inputs are silent in local mode', () => {
     verificationMode: 'local', anthropicApiKey: 'sk-ant', model: 'claude-sonnet-5',
   }));
   assert.deepEqual(plan.warnings, []);
+});
+
+// An input with a default is always present, so presence cannot mean "the
+// author chose it". Testing presence put every defaulted input in the warning
+// on every platform run, which trains the reader to skip the line the one time
+// it names something they typed.
+test('plan: an input left at its declared default warns about nothing', () => {
+  const plan = resolvePlan(input({
+    maxTurns: '100',
+    browserDevtools: 'true',
+    backendDevtools: 'false',
+    nodeDevtools: 'false',
+    pythonDevtools: 'false',
+    terminalDevtools: 'false',
+  }));
+  assert.equal(plan.mode, 'platform');
+  assert.equal(plan.warnings.join(' ').includes('do nothing in platform mode'), false);
+});
+
+test('plan: a devtools flag moved off its default warns in platform mode', () => {
+  const plan = resolvePlan(input({ pythonDevtools: 'true', terminalDevtools: 'true' }));
+  assert.match(plan.warnings.join(' '), /ironbee_python_devtools/);
+  assert.match(plan.warnings.join(' '), /ironbee_terminal_devtools/);
+});
+
+// The mirror image, and worth the same warning: "I set a job timeout and the
+// run ignored it" is exactly as confusing as "I set a model and the run
+// ignored it".
+test('plan: platform-only inputs warn in local mode', () => {
+  const plan = resolvePlan(input({
+    verificationMode: 'local',
+    anthropicApiKey: 'sk-ant',
+    jobTimeoutMinutes: '30',
+    project: 'shop',
+    headers: 'X-Marker: one',
+    bindRepository: 'false',
+  }));
+  assert.equal(plan.ok, true);
+  const text = plan.warnings.join(' ');
+  assert.match(text, /do nothing in local mode/);
+  assert.match(text, /ironbee_job_timeout_minutes/);
+  assert.match(text, /ironbee_project/);
+  assert.match(text, /app_headers/);
+  assert.match(text, /ironbee_bind_repository/);
+});
+
+test('plan: platform-only inputs are silent in platform mode', () => {
+  const plan = resolvePlan(input({ jobTimeoutMinutes: '30', project: 'shop' }));
+  assert.equal(plan.warnings.join(' ').includes('do nothing in local mode'), false);
+});
+
+// ─── Booleans ────────────────────────────────────────────────────────────────
+//
+// An action input has no type — GitHub validates nothing and hands the step a
+// string — so an unrecognised one is named here or it is named nowhere.
+
+test('boolean: the accepted spellings all resolve', () => {
+  const errors = [];
+  for (const yes of ['true', 'TRUE', ' 1 ', 'yes', 'on']) {
+    assert.equal(parseBoolean('flag', yes, false, errors), true, yes);
+  }
+  for (const no of ['false', 'FALSE', '0', 'no', 'off']) {
+    assert.equal(parseBoolean('flag', no, true, errors), false, no);
+  }
+  assert.deepEqual(errors, []);
+});
+
+// Empty is the declared default arriving through an expression that resolved to
+// nothing, not a value someone chose.
+test('boolean: empty takes the declared default without complaining', () => {
+  const errors = [];
+  assert.equal(parseBoolean('flag', '', true, errors), true);
+  assert.equal(parseBoolean('flag', undefined, false, errors), false);
+  assert.deepEqual(errors, []);
+});
+
+test('boolean: an unrecognised value is named, not read as false', () => {
+  const errors = [];
+  parseBoolean('fix', 'flase', true, errors);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /fix must be true or false/);
+  assert.match(errors[0], /flase/);
+  assert.match(errors[0], /yes/);
+});
+
+// The failure this exists to stop: fixing silently off on every run, with no
+// symptom but a feature that never happens.
+test('plan: a mistyped fix fails the run instead of disabling fixing', () => {
+  const plan = resolvePlan(input({ anthropicApiKey: 'sk-ant', fix: 'flase' }));
+  assert.equal(plan.ok, false);
+  assert.match(plan.errors.join(' '), /verification_apply_fix must be true or false/);
+});
+
+test('plan: a mistyped boolean is named for every input that takes one', () => {
+  const plan = resolvePlan(input({
+    bindRepository: 'nope',
+    nodeDevtools: 'enable',
+    verbose: 'loud',
+    excludeFiles: 'sure',
+  }));
+  assert.equal(plan.ok, false);
+  const text = plan.errors.join(' ');
+  for (const name of ['ironbee_bind_repository', 'ironbee_node_devtools', 'verbose', 'ironbee_exclude_files']) {
+    assert.match(text, new RegExp(name));
+  }
+});
+
+test('plan: a synonym reaches the decision it configures', () => {
+  const off = resolvePlan(input({ verificationMode: 'platform', bindRepository: 'off' }));
+  assert.equal(off.cliArgs.includes('--no-repo'), true);
+  const on = resolvePlan(input({ verificationMode: 'platform', bindRepository: 'on' }));
+  assert.equal(on.cliArgs.includes('--no-repo'), false);
+});
+
+// Normalised once here and read back as step outputs, so a step's own `if:`
+// cannot apply a narrower vocabulary than the one this file accepts.
+test('plan: verbose and exclude_files come back normalised', () => {
+  const on = resolvePlan(input({ verbose: 'yes', excludeFiles: 'ON' }));
+  assert.equal(on.verbose, true);
+  assert.equal(on.excludeFiles, true);
+
+  const off = resolvePlan(input({ verbose: 'NO', excludeFiles: 'off' }));
+  assert.equal(off.verbose, false);
+  assert.equal(off.excludeFiles, false);
+
+  // Unset lands on each one's own declared default, which they do not share.
+  const unset = resolvePlan(input({}));
+  assert.equal(unset.verbose, false);
+  assert.equal(unset.excludeFiles, true);
 });
 
 // Gate-only is a legitimate configuration: the verification still runs and
@@ -517,4 +648,86 @@ test('plan: secret headers are refused for a tunnel target too', () => {
   }));
   assert.equal(plan.ok, false);
   assert.match(plan.errors.join(' '), /deployed URL only/);
+});
+
+// ─── The console the report links into ───────────────────────────────────────
+//
+// The failure this prevents: a workflow that names only its collector — the one
+// setting a non-production stage cannot omit — writes its events to that stage
+// and builds every report link into production. Each link 404s, and the report
+// is what looks broken.
+
+test('console: an explicit host wins over anything derivable', () => {
+  assert.equal(
+    resolveConsoleUrl({ consoleUrl: 'console.internal', collectorUrl: 'https://collector.service.ironbee.dev' }),
+    'console.internal',
+  );
+});
+
+test('console: an unset host follows the collector to its stage', () => {
+  assert.equal(
+    resolveConsoleUrl({ consoleUrl: '', collectorUrl: 'https://collector.service.ironbee.dev' }),
+    'console.ironbee.dev',
+  );
+  assert.equal(
+    resolveConsoleUrl({ consoleUrl: '  ', collectorUrl: 'https://collector.service.ironbee.us' }),
+    'console.ironbee.us',
+  );
+});
+
+// A collector that is not one of ours says nothing about which console to use,
+// and neither does no collector at all.
+test('console: an unrecognisable collector falls back to the default host', () => {
+  assert.equal(resolveConsoleUrl({ consoleUrl: '', collectorUrl: '' }), 'console.ironbee.ai');
+  assert.equal(
+    resolveConsoleUrl({ consoleUrl: '', collectorUrl: 'https://collect.example.com' }),
+    'console.ironbee.ai',
+  );
+  assert.equal(
+    resolveConsoleUrl({ consoleUrl: '', collectorUrl: 'not a url' }),
+    'console.ironbee.ai',
+  );
+});
+
+test('plan: the derived console host is on the plan', () => {
+  const plan = resolvePlan(input({ collectorUrl: 'https://collector.service.ironbee.dev' }));
+  assert.equal(plan.consoleUrl, 'console.ironbee.dev');
+});
+
+// ─── app_port carries no default ─────────────────────────────────────────────
+//
+// It used to default to 3000, and the default was indistinguishable from a
+// port someone typed — the same defect the unused-input warnings had. Two
+// things follow, and both are the point of removing it.
+
+// Before: `app_url: http://localhost:4000` with nobody touching app_port still
+// compared 4000 against the default 3000 and warned about a disagreement
+// between the user and themselves, on every single run.
+test('port: a URL port alone warns about nothing', () => {
+  const result = resolveTarget({ appUrl: 'http://localhost:4000', appStartCommand: 'x', appPort: '' });
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.target, { kind: 'tunnel', port: 4000 });
+});
+
+// Before: this tunnelled to 3000 silently. An application on any other port
+// then failed with a connection refused deep inside the run, where nothing
+// points back at the port being wrong.
+test('port: a start command with no port is refused up front', () => {
+  const result = resolveTarget({ appUrl: '', appStartCommand: 'npm start', appPort: '' });
+  assert.equal(result.target, null);
+  assert.match(result.errors.join(' '), /app_start_command is set but app_port is not/);
+});
+
+test('port: a portless localhost URL is refused up front', () => {
+  const result = resolveTarget({ appUrl: 'http://localhost', appStartCommand: '', appPort: '' });
+  assert.equal(result.target, null);
+  assert.match(result.errors.join(' '), /app_url has no port and app_port is not set/);
+});
+
+// The warning now means what it says: both were written, and they disagree.
+test('port: a real disagreement still warns, and the URL still wins', () => {
+  const result = resolveTarget({ appUrl: 'http://localhost:4000', appStartCommand: '', appPort: '3000' });
+  assert.deepEqual(result.target, { kind: 'tunnel', port: 4000 });
+  assert.match(result.warnings.join(' '), /app_url names port 4000 and app_port is 3000/);
 });

@@ -75,9 +75,68 @@ function parseUrl(raw) {
   }
 }
 
+/**
+ * The boolean vocabulary, written once.
+ *
+ * The same synonyms the config step's own `toBool` accepts, deliberately: two
+ * spellings of "yes" inside one action is how `ironbee_browser_devtools: on`
+ * ends up enabled in the generated config and reported as off in a warning.
+ */
+const BOOLEAN_TRUE = ['true', '1', 'yes', 'on'];
+const BOOLEAN_FALSE = ['false', '0', 'no', 'off'];
+
+/** For values GitHub itself produces, which are never mistyped by a human. */
 function truthy(value) {
-  return /^(true|1|yes|on)$/i.test(String(value == null ? '' : value).trim());
+  return BOOLEAN_TRUE.includes(String(value == null ? '' : value).trim().toLowerCase());
 }
+
+/**
+ * For values a workflow author typed.
+ *
+ * An action input has no type — GitHub validates nothing and hands the step a
+ * string — so an unrecognised one has to be named here or it is not named
+ * anywhere. Silently reading it as false is the failure this exists to stop:
+ * `fix: flase` would disable fixing on every run, and the only symptom is a
+ * feature that never happens.
+ */
+function parseBoolean(name, value, fallback, errors) {
+  const raw = String(value == null ? '' : value).trim().toLowerCase();
+  // Empty is the declared default arriving through an expression that resolved
+  // to nothing, not a value someone chose.
+  if (raw === '') {
+    return fallback;
+  }
+  if (BOOLEAN_TRUE.includes(raw)) {
+    return true;
+  }
+  if (BOOLEAN_FALSE.includes(raw)) {
+    return false;
+  }
+  errors.push(
+    `${name} must be true or false (got '${String(value).trim()}') — `
+    + `${BOOLEAN_TRUE.join('/')} and ${BOOLEAN_FALSE.join('/')} are accepted`,
+  );
+  return fallback;
+}
+
+/**
+ * Every boolean input, with the default declared in `action.yml`.
+ *
+ * All of them, not only the ones this file reads: two are consumed directly by
+ * a step's own `if:`, and validating them here is what makes a typo fail before
+ * anything is installed rather than turn into a step that quietly did not run.
+ */
+const BOOLEAN_INPUTS = [
+  ['verification_apply_fix', 'fix', true],
+  ['ironbee_bind_repository', 'bindRepository', true],
+  ['ironbee_exclude_files', 'excludeFiles', true],
+  ['ironbee_browser_devtools', 'browserDevtools', true],
+  ['ironbee_backend_devtools', 'backendDevtools', false],
+  ['ironbee_node_devtools', 'nodeDevtools', false],
+  ['ironbee_python_devtools', 'pythonDevtools', false],
+  ['ironbee_terminal_devtools', 'terminalDevtools', false],
+  ['verbose', 'verbose', false],
+];
 
 function present(value) {
   return String(value == null ? '' : value).trim().length > 0;
@@ -181,10 +240,9 @@ function resolveTarget({ appUrl, appStartCommand, appPort }) {
     // nowhere.
     //
     // The URL wins when both name a port, and a disagreement is a warning
-    // rather than an error. `app_port` carries a default, so "the user set it"
-    // and "nobody set it" are indistinguishable here — refusing the pair would
-    // reject `app_url: http://localhost:4000` written next to a default nobody
-    // typed. What the user did write is the URL.
+    // rather than an error. `app_port` carries no default, so reaching this
+    // line means someone wrote both and they disagree — the URL is the more
+    // specific statement, and it is the one that also decides the target.
     const urlPort = url.port === '' ? null : Number(url.port);
     if (urlPort !== null && declaredPort !== null && urlPort !== declaredPort) {
       warnings.push(
@@ -218,6 +276,37 @@ function resolveTarget({ appUrl, appStartCommand, appPort }) {
     + 'to start the application on this runner and verify it through a tunnel',
   );
   return { target: null, errors, warnings };
+}
+
+// ─── The console the report links into ───────────────────────────────────────
+
+/** The last resort, matching the CLI's own. */
+const DEFAULT_CONSOLE_HOST = 'console.ironbee.ai';
+
+/**
+ * Where the report's session links point.
+ *
+ * Derived from the collector when nobody named one, because the two always name
+ * the same stage and only one of them has to be configured for the run to work
+ * at all. Without the derivation a workflow that sets only its collector — the
+ * one setting a non-production stage cannot omit — gets its events written to
+ * that stage and its links built into production, so every link in the report
+ * 404s and the report looks like the broken thing.
+ *
+ * The CLI infers its own service domain from an explicit collector URL the same
+ * way. This mirrors that rule rather than sharing it, for the reason
+ * `isNonRoutableHost` does: this repository has no dependencies.
+ */
+function resolveConsoleUrl({ consoleUrl, collectorUrl }) {
+  if (present(consoleUrl)) {
+    return String(consoleUrl).trim();
+  }
+  const url = parseUrl(String(collectorUrl == null ? '' : collectorUrl).trim());
+  const host = url === null ? '' : url.hostname.toLowerCase();
+  if (host.startsWith('collector.service.')) {
+    return `console.${host.slice('collector.service.'.length)}`;
+  }
+  return DEFAULT_CONSOLE_HOST;
 }
 
 // ─── The repository binding ──────────────────────────────────────────────────
@@ -282,30 +371,60 @@ function timeoutFloorMinutes({ jobTimeoutMinutes }) {
 // ─── Inputs that describe an agent that is not running ───────────────────────
 
 const LOCAL_ONLY_INPUTS = [
-  ['model', 'model'],
-  ['max_turns', 'maxTurns'],
-  ['claude_args', 'claudeArgs'],
-  ['ironbee_browser_devtools', 'browserDevtools'],
-  ['ironbee_backend_devtools', 'backendDevtools'],
-  ['ironbee_node_devtools', 'nodeDevtools'],
+  { name: 'claude_code_model', key: 'model', fallback: '' },
+  { name: 'claude_code_max_turns', key: 'maxTurns', fallback: '100' },
+  { name: 'claude_code_args', key: 'claudeArgs', fallback: '' },
+  { name: 'ironbee_browser_devtools', key: 'browserDevtools', fallback: 'true' },
+  { name: 'ironbee_backend_devtools', key: 'backendDevtools', fallback: 'false' },
+  { name: 'ironbee_node_devtools', key: 'nodeDevtools', fallback: 'false' },
+  { name: 'ironbee_python_devtools', key: 'pythonDevtools', fallback: 'false' },
+  { name: 'ironbee_terminal_devtools', key: 'terminalDevtools', fallback: 'false' },
+  { name: 'ironbee_extra_config', key: 'extraConfig', fallback: '' },
+];
+
+// ─── Inputs that describe a job that is not being created ────────────────────
+
+const PLATFORM_ONLY_INPUTS = [
+  { name: 'ironbee_bind_repository', key: 'bindRepository', fallback: 'true' },
+  { name: 'ironbee_job_timeout_minutes', key: 'jobTimeoutMinutes', fallback: '' },
+  { name: 'ironbee_project', key: 'project', fallback: '' },
+  { name: 'app_wait_seconds', key: 'appWaitSeconds', fallback: '' },
+  { name: 'app_headers', key: 'headers', fallback: '' },
+  { name: 'app_secret_headers', key: 'secretHeaders', fallback: '' },
 ];
 
 /**
- * Warns rather than ignoring. These configure the agent that runs on the
- * runner; in platform mode the agent runs elsewhere with the platform's own
- * settings, so a workflow carrying them is describing something that is not
- * happening — and silence would let it believe otherwise.
+ * Whether a workflow author actually chose this value.
+ *
+ * Compared against the declared default rather than tested for presence,
+ * because an input with a default is *always* present: a step reads `'100'` for
+ * `claude_code_max_turns` whether the workflow named it or not. Presence alone
+ * would put every defaulted input in every warning, which trains the reader to
+ * ignore the line the one time it names something they typed.
  */
-function unusedInputWarnings(input) {
-  const named = LOCAL_ONLY_INPUTS
-    .filter(([, key]) => present(input[key]))
-    .map(([name]) => name);
+function chosen(input, entry) {
+  const raw = String(input[entry.key] == null ? '' : input[entry.key]).trim();
+  return raw.length > 0 && raw.toLowerCase() !== entry.fallback;
+}
+
+/**
+ * Warns rather than ignoring, in both directions.
+ *
+ * Each mode runs one engine and reads one half of these inputs. A workflow
+ * carrying the other half is describing something that is not happening — and
+ * the two halves are worth the same warning, because "I set a job timeout and
+ * the run ignored it" is exactly as confusing as "I set a model and the run
+ * ignored it".
+ */
+function unusedInputWarnings(mode, input) {
+  const [entries, sentence] = mode === MODE_PLATFORM
+    ? [LOCAL_ONLY_INPUTS, 'configure the agent that runs on this runner and do nothing in platform mode']
+    : [PLATFORM_ONLY_INPUTS, 'configure the platform verification job and do nothing in local mode'];
+  const named = entries.filter((entry) => chosen(input, entry)).map((entry) => entry.name);
   if (named.length === 0) {
     return [];
   }
-  return [
-    `these inputs configure the local agent and do nothing in platform mode: ${named.join(', ')}`,
-  ];
+  return [`these inputs ${sentence}: ${named.join(', ')}`];
 }
 
 /**
@@ -328,6 +447,13 @@ function parseHeaders(raw) {
 function resolvePlan(input) {
   const errors = [];
   const warnings = [];
+
+  // Parsed before anything reads one, so a typo in any of them is named in the
+  // same run as every other error rather than one deploy at a time.
+  const flags = {};
+  for (const [name, key, fallback] of BOOLEAN_INPUTS) {
+    flags[key] = parseBoolean(name, input[key], fallback, errors);
+  }
 
   const hasAnthropicCredential = present(input.anthropicApiKey) || present(input.claudeCodeOauthToken);
   const repositoryPrivate = truthy(input.repositoryPrivate);
@@ -367,8 +493,8 @@ function resolvePlan(input) {
   errors.push(...targetErrors);
   warnings.push(...targetWarnings);
 
-  if (mode === MODE_PLATFORM) {
-    warnings.push(...unusedInputWarnings(input));
+  if (mode !== null) {
+    warnings.push(...unusedInputWarnings(mode, input));
   }
 
   // A tunnel target's traffic reaches the application over a pipe from this
@@ -379,7 +505,7 @@ function resolvePlan(input) {
     errors.push('headers apply to a deployed URL only; a tunnel target passes no layer that could add them');
   }
 
-  const fix = truthy(input.fix);
+  const fix = flags.fix;
   // Gate-only is a legitimate configuration, not a failure: the verification
   // still runs and still decides the merge. Saying so is what stops it reading
   // as a broken setup.
@@ -410,7 +536,7 @@ function resolvePlan(input) {
       cliArgs.push('--timeout', String(positiveInt(input.jobTimeoutMinutes) * 60));
     }
     cliArgs.push(...resolveRepoBinding({
-      bind: input.bindRepository === undefined ? true : truthy(input.bindRepository),
+      bind: flags.bindRepository,
       eventName: input.eventName,
       prNumber: input.prNumber,
       sha: input.sha,
@@ -435,6 +561,14 @@ function resolvePlan(input) {
     // here too would put two of them on one port.
     needsApp: mode === MODE_PLATFORM && target !== null && target.kind === 'tunnel',
     timeoutFloorMinutes: timeoutFloorMinutes({ jobTimeoutMinutes: input.jobTimeoutMinutes }),
+    // Normalised here and read back as step outputs, rather than compared
+    // against `'true'` in each step's own `if:`. The comparison is a third
+    // boolean vocabulary — narrower than this file's and narrower than the
+    // config step's — so `verbose: on` would enable the flag in one place and
+    // not the other, with nothing anywhere saying why.
+    verbose: flags.verbose,
+    excludeFiles: flags.excludeFiles,
+    consoleUrl: resolveConsoleUrl({ consoleUrl: input.consoleUrl, collectorUrl: input.collectorUrl }),
   };
 }
 
@@ -458,17 +592,24 @@ function readInput() {
     appPort: process.env.INPUT_APP_PORT,
     appWaitSeconds: process.env.INPUT_APP_WAIT_SECONDS,
     project: process.env.INPUT_IRONBEE_PROJECT,
-    bindRepository: process.env.INPUT_BIND_REPOSITORY,
-    jobTimeoutMinutes: process.env.INPUT_JOB_TIMEOUT_MINUTES,
+    consoleUrl: process.env.INPUT_IRONBEE_CONSOLE_URL,
+    collectorUrl: process.env.INPUT_IRONBEE_COLLECTOR_URL,
+    bindRepository: process.env.INPUT_IRONBEE_BIND_REPOSITORY,
+    jobTimeoutMinutes: process.env.INPUT_IRONBEE_JOB_TIMEOUT_MINUTES,
     headers: process.env.INPUT_APP_HEADERS,
     secretHeaders: process.env.INPUT_APP_SECRET_HEADERS,
-    fix: process.env.INPUT_FIX,
-    model: process.env.INPUT_MODEL,
-    maxTurns: process.env.INPUT_MAX_TURNS,
-    claudeArgs: process.env.INPUT_CLAUDE_ARGS,
+    fix: process.env.INPUT_VERIFICATION_APPLY_FIX,
+    model: process.env.INPUT_CLAUDE_CODE_MODEL,
+    maxTurns: process.env.INPUT_CLAUDE_CODE_MAX_TURNS,
+    claudeArgs: process.env.INPUT_CLAUDE_CODE_ARGS,
     browserDevtools: process.env.INPUT_IRONBEE_BROWSER_DEVTOOLS,
     backendDevtools: process.env.INPUT_IRONBEE_BACKEND_DEVTOOLS,
     nodeDevtools: process.env.INPUT_IRONBEE_NODE_DEVTOOLS,
+    pythonDevtools: process.env.INPUT_IRONBEE_PYTHON_DEVTOOLS,
+    terminalDevtools: process.env.INPUT_IRONBEE_TERMINAL_DEVTOOLS,
+    excludeFiles: process.env.INPUT_IRONBEE_EXCLUDE_FILES,
+    extraConfig: process.env.INPUT_IRONBEE_EXTRA_CONFIG,
+    verbose: process.env.INPUT_VERBOSE,
   };
 }
 
@@ -490,6 +631,9 @@ function writeOutputs(plan) {
     ['target_port', plan.target && plan.target.kind === 'tunnel' ? String(plan.target.port) : ''],
     ['needs_app', plan.needsApp ? 'true' : 'false'],
     ['can_fix', plan.canFix ? 'true' : 'false'],
+    ['verbose', plan.verbose ? 'true' : 'false'],
+    ['exclude_files', plan.excludeFiles ? 'true' : 'false'],
+    ['console_url', plan.consoleUrl],
     ['timeout_floor_minutes', String(plan.timeoutFloorMinutes)],
   ];
   let body = outputs.map(([key, value]) => `${key}=${value}\n`).join('');
@@ -556,6 +700,8 @@ function main() {
 
 module.exports = {
   resolvePlan,
+  parseBoolean,
+  resolveConsoleUrl,
   parseHeaders,
   emitSecretHeaderArgs,
   resolveMode,
