@@ -346,7 +346,11 @@ function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, b
   if (bind === false) {
     return ['--no-repo'];
   }
-  if (eventName === 'pull_request' && present(prNumber)) {
+  // A comment measures the same thing a `pull_request` run does — the whole
+  // pull request — and for the same reason takes the number rather than the
+  // checkout: the comment's own event carries no commit at all, and `github.sha`
+  // on it points at the default branch's tip, not at anything under review.
+  if ((eventName === 'pull_request' || eventName === 'issue_comment') && present(prNumber)) {
     return ['--pr', String(prNumber).trim()];
   }
   if (eventName === 'push' && present(sha)) {
@@ -514,10 +518,16 @@ function resolvePlan(input) {
   // run with. Said as its own cause, because the alternative is an empty API
   // key surfacing as "ironbee_api_key is required" on a workflow that sets it.
   if (truthy(input.isFork)) {
-    errors.push(
-      'this is a pull request from a fork, which receives no secrets — '
-      + 'neither verification mode can run',
-    );
+    // Two different reasons, and stating the wrong one would be worse than
+    // saying nothing. A `pull_request` run on a fork receives no secrets, so it
+    // cannot work. A comment run DOES receive them — it is the base
+    // repository's own event — which is precisely why the fork's code must not
+    // be built and started here.
+    errors.push(input.eventName === 'issue_comment'
+      ? 'this pull request comes from a fork, and a comment run holds this repository\'s secrets — '
+        + 'building and starting a fork\'s code here would hand them to whoever opened it'
+      : 'this is a pull request from a fork, which receives no secrets — '
+        + 'neither verification mode can run');
   }
 
   const { mode, reason, error: modeError } = resolveMode({
@@ -553,7 +563,19 @@ function resolvePlan(input) {
     errors.push('headers apply to a deployed URL only; a tunnel target passes no layer that could add them');
   }
 
-  const fix = flags.fix;
+  // On a comment run the command decides, and the setting is a ceiling rather
+  // than a default: a repository that turned fixing off has made a decision
+  // about commits landing on its branches, and a comment is not the place to
+  // reverse it. Off by default the other way too — the person asked for a
+  // verification, and a run that also commits is not what they typed.
+  const commandFix = truthy(input.commandFix);
+  const fix = input.eventName === 'issue_comment' ? flags.fix && commandFix : flags.fix;
+  if (input.eventName === 'issue_comment' && commandFix && !flags.fix) {
+    warnings.push(
+      '--fix was asked for, but fixing is switched off for this repository — '
+      + 'the run will verify and report, and fix nothing',
+    );
+  }
   // Gate-only is a legitimate configuration, not a failure: the verification
   // still runs and still decides the merge. Saying so is what stops it reading
   // as a broken setup.
@@ -660,6 +682,7 @@ function readInput() {
     headers: process.env.INPUT_APP_HEADERS,
     secretHeaders: process.env.INPUT_APP_SECRET_HEADERS,
     fix: process.env.INPUT_VERIFICATION_APPLY_FIX,
+    commandFix: process.env.COMMAND_FIX,
     model: process.env.INPUT_CLAUDE_CODE_MODEL,
     maxTurns: process.env.INPUT_CLAUDE_CODE_MAX_TURNS,
     claudeArgs: process.env.INPUT_CLAUDE_CODE_ARGS,

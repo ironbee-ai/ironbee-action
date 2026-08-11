@@ -76,6 +76,7 @@ The action adapts its behavior based on the trigger event:
 | `push` (main/master) | Diff-based — verifies changed pages | Creates fix PR automatically if issues found |
 | `workflow_dispatch` | Full — verifies entire application | Creates fix PR automatically if issues found |
 | `schedule` | Full — verifies entire application | Creates fix PR automatically if issues found |
+| `issue_comment` | Diff-based — verifies the pull request the comment is on | Commits fixes to the PR branch **only when the comment asks**, posts the report comment |
 
 ### PR Verification
 
@@ -107,6 +108,73 @@ on:
 
 Runs a full application verification on a schedule. No diff — tests the entire application. Creates a fix PR if issues are found.
 
+### On Demand, From a Comment
+
+```yaml
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: ironbee-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    # WHO may run it is decided here, not by the action. An `issue_comment`
+    # event fires for anyone who can leave a comment and runs in the BASE
+    # repository with its secrets — so this condition is the security boundary.
+    if: >-
+      github.event.issue.pull_request &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) &&
+      startsWith(github.event.comment.body, '/ironbee-verify')
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # `issue_comment` runs on the DEFAULT branch and `github.sha` points there,
+      # not at the pull request — the head has to be checked out explicitly.
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.issue.number }}/head
+          fetch-depth: 0
+      - uses: ironbee-ai/ironbee-action@v0
+        with:
+          ...
+```
+
+Then, on any pull request:
+
+```
+/ironbee-verify
+/ironbee-verify --fix
+/ironbee-verify check the coupon flow end to end
+/ironbee-verify --fix the totals are wrong when a coupon is applied
+```
+
+Options are marked with `--`, so scanning stops at the first token that is not
+one and everything after it is the instruction for the agent. That is what makes
+`/ironbee-verify fix the cart total` a prompt rather than a run that commits: a
+bare `fix` is an ordinary English verb, and reading it as a flag would apply
+changes nobody asked for. A multi-line comment works too — the whole body below
+the command line is the prompt.
+
+The command must be the first non-quoted line of the comment, so a comment that
+merely discusses it, or a reply that quotes it, starts nothing.
+
+`--fix` is opt-in per comment and bounded by `verification_apply_fix`: a
+repository that switched fixing off cannot have it switched back on from a
+comment. Unknown options are answered with a usage reply rather than read as
+prose, and that run ends red — a composite action cannot stop halfway, so the
+alternative would be verifying something other than what was asked for.
+
+The comment gets an 👀 reaction when the run starts and 👍 / 👎 when it ends —
+an `issue_comment` run does not appear in the pull request's checks, so without
+them there is nothing to tell "it started" from "nothing listened".
+
+**Fork pull requests are refused on this event**, and for the opposite reason to
+the usual one: a comment run holds the base repository's secrets, so building
+and starting a fork's code under it would hand them to whoever opened it.
+
 ### Manual Verification
 
 ```yaml
@@ -124,7 +192,7 @@ The action requires these GitHub token permissions:
 |------------|----------|---------|
 | `contents: write` | Yes | Commit fixes to PR branches, create fix branches |
 | `pull-requests: write` | Yes | Post verification report comments on PRs, create fix PRs |
-| `issues: write` | Yes | Update PR comments via GitHub API |
+| `issues: write` | Yes | Update PR comments, and add reactions on a comment-triggered run |
 
 A pull request from a **fork** receives no secrets, so neither verification mode
 can run there. The action detects it and says so rather than failing on an empty
