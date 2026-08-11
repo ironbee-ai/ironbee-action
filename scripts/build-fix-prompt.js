@@ -95,6 +95,14 @@ function buildFixPrompt(job, options) {
   lines.push('');
   lines.push('Work through the issues in order. For each one, find the cause in the code');
   lines.push('and fix it. If an issue is not a code defect, say so and leave it alone.');
+  lines.push('');
+  // Asked for explicitly because it is read, not just displayed: the
+  // verification that runs against these fixes reads a repository that does not
+  // contain them, so this is the only account of them it gets.
+  lines.push('Finish with a short summary of what you changed and why — a few sentences,');
+  lines.push('naming each file you touched. It is given to the verification that runs');
+  lines.push('against your fixes, which reads the repository as it was before them and');
+  lines.push('would otherwise report every one of these issues again.');
 
   return lines.join('\n');
 }

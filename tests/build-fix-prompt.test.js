@@ -118,3 +118,16 @@ test('an issue quoting a foreign delimiter cannot close the real block', () => {
   assert.ok(injected > -1, 'the issue text is still rendered');
   assert.ok(closing > injected, 'the real block closes after the injected text, not before it');
 });
+
+// The summary is read, not just displayed: it becomes the re-verification's
+// prompt, and that run reads a repository that does not contain the fixes.
+test('fix prompt: asks for a closing summary, and says what it is for', () => {
+  const prompt = buildFixPrompt(
+    { result: { status: 'fail', issues: ['the checkout never completes'], checks: [] } },
+    { nonce: 'N' },
+  );
+
+  assert.match(prompt, /Finish with a short summary/);
+  assert.match(prompt, /naming each file you touched/);
+  assert.match(prompt, /reads the repository as it was before them/);
+});

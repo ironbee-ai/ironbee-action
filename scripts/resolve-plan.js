@@ -388,10 +388,17 @@ const OVERHEAD_MINUTES = 10;
  * the only thing that can be done about the failure mode (the step killed
  * mid-run, the job cancelled, and a platform failure blamed for it) is to say
  * the number up front, where it is visible before the failure rather than after.
+ *
+ * `verifications` is how many platform jobs the run can hold, not how many it
+ * will. A configuration that can fix runs a second one against the repaired
+ * application, and counting only the first understated the floor by a whole job
+ * timeout — the printed number was below what the run needed, on exactly the
+ * path that needs the most.
  */
-function timeoutFloorMinutes({ jobTimeoutMinutes }) {
+function timeoutFloorMinutes({ jobTimeoutMinutes, verifications }) {
   const job = positiveInt(jobTimeoutMinutes);
-  return DEFAULT_QUEUE_WAIT_MINUTES + (job === null ? 60 : job) + OVERHEAD_MINUTES;
+  const runs = positiveInt(verifications) ?? 1;
+  return DEFAULT_QUEUE_WAIT_MINUTES + runs * (job === null ? 60 : job) + OVERHEAD_MINUTES;
 }
 
 // ─── Inputs that describe an agent that is not running ───────────────────────
@@ -544,6 +551,12 @@ function resolvePlan(input) {
     );
   }
 
+  // Started by this action only for a platform tunnel run. A deployed URL was
+  // started by whoever deployed it, and in local mode the agent starts the
+  // application itself from `app_start_command` in its prompt — starting it
+  // here too would put two of them on one port.
+  const needsApp = mode === MODE_PLATFORM && target !== null && target.kind === 'tunnel';
+
   const cliArgs = [];
   if (mode === MODE_PLATFORM && target !== null) {
     if (target.kind === 'url') {
@@ -585,12 +598,13 @@ function resolvePlan(input) {
     target,
     cliArgs,
     canFix,
-    // Started by this action only for a platform tunnel run. A deployed URL was
-    // started by whoever deployed it, and in local mode the agent starts the
-    // application itself from `app_start_command` in its prompt — starting it
-    // here too would put two of them on one port.
-    needsApp: mode === MODE_PLATFORM && target !== null && target.kind === 'tunnel',
-    timeoutFloorMinutes: timeoutFloorMinutes({ jobTimeoutMinutes: input.jobTimeoutMinutes }),
+    needsApp,
+    // Two verifications whenever a fix round can run and there is something to
+    // restart: the first, then one against the repaired application.
+    timeoutFloorMinutes: timeoutFloorMinutes({
+      jobTimeoutMinutes: input.jobTimeoutMinutes,
+      verifications: canFix && needsApp ? 2 : 1,
+    }),
     // Normalised here and read back as step outputs, rather than compared
     // against `'true'` in each step's own `if:`. The comparison is a third
     // boolean vocabulary — narrower than this file's and narrower than the

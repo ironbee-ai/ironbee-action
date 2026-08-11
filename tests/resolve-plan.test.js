@@ -604,6 +604,36 @@ test('floor: the default job timeout produces a floor above the queue wait', () 
   assert.equal(timeoutFloorMinutes({ jobTimeoutMinutes: '' }), 15 + 60 + 10);
 });
 
+// A fix round runs a second verification against the repaired application, and
+// counting only the first understated the floor by a whole job timeout — on the
+// one path that needs the most.
+test('floor: a run that can fix budgets for both verifications', () => {
+  assert.equal(timeoutFloorMinutes({ jobTimeoutMinutes: '45', verifications: 1 }), 15 + 45 + 10);
+  assert.equal(timeoutFloorMinutes({ jobTimeoutMinutes: '45', verifications: 2 }), 15 + 90 + 10);
+});
+
+test('plan: the floor covers the re-verification when one can happen', () => {
+  const canFix = resolvePlan(input({
+    verificationMode: 'platform',
+    anthropicApiKey: 'sk-ant',
+    appUrl: '',
+    appStartCommand: 'npm start',
+    appPort: '4000',
+    jobTimeoutMinutes: '45',
+  }));
+  assert.equal(canFix.needsApp, true);
+  assert.equal(canFix.timeoutFloorMinutes, 15 + 90 + 10);
+
+  // A deployed URL is never restarted, so no second verification is possible.
+  const deployed = resolvePlan(input({
+    verificationMode: 'platform',
+    anthropicApiKey: 'sk-ant',
+    jobTimeoutMinutes: '45',
+  }));
+  assert.equal(deployed.needsApp, false);
+  assert.equal(deployed.timeoutFloorMinutes, 15 + 45 + 10);
+});
+
 test('floor: an explicit job timeout is what the floor is built from', () => {
   assert.equal(timeoutFloorMinutes({ jobTimeoutMinutes: '30' }), 15 + 30 + 10);
 });

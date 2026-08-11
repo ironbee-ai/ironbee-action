@@ -162,7 +162,12 @@ function buildPlatformReport(job, options) {
   // as passing.
   lines.push(...formatList('Checks', result && result.checks, '-'));
   lines.push(...formatList('Issues', result && result.issues, '-'));
-  lines.push(...formatList('Fixes', result && result.fixes, '-'));
+  // "Suggested", unlike the local report's plain "Fixes", and the difference is
+  // real rather than wording: the run that produces this verdict verifies and
+  // does not edit code, so the field holds remedies it recommends, not changes
+  // it made. Labelling them "Fixes" reads as "these were applied" — on a report
+  // whose whole point is that the issues above are still there.
+  lines.push(...formatList('Suggested fixes', result && result.fixes, '-'));
 
   if (result && result.refused) {
     lines.push(`> ℹ️ The run declined or narrowed part of the request (${result.reasonCode || 'no code'}).`);

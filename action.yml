@@ -914,6 +914,20 @@ runs:
         # something" would report a fix on every run that produced none, and
         # then re-verify against unchanged code.
         if [ -n "$(git status --porcelain -- ':(exclude).ironbee')" ]; then
+          # The agent's own account of the fixes, for the re-verification's
+          # prompt. The final result event carries its closing message, which is
+          # the summary the fix prompt asks for — every other assistant turn is
+          # thinking-aloud between tool calls, and concatenating them would
+          # spend the prompt budget on narration.
+          jq -r 'select(.type == "result") | .result // empty' \
+            .ironbee/claude-fix.log.raw > .ironbee/fix-summary.txt 2>/dev/null || true
+          # A run that ended without one still has its assistant turns, and a
+          # partial account beats none.
+          if [ ! -s .ironbee/fix-summary.txt ]; then
+            jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text' \
+              .ironbee/claude-fix.log.raw > .ironbee/fix-summary.txt 2>/dev/null || true
+          fi
+
           echo "fixed=true" >> "$GITHUB_OUTPUT"
         else
           echo "fixed=false" >> "$GITHUB_OUTPUT"
@@ -936,6 +950,7 @@ runs:
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
         APP_START_COMMAND: ${{ inputs.app_start_command }}
         APP_RESTART_COMMAND: ${{ inputs.app_restart_command }}
+        USER_PROMPT: ${{ inputs.verification_prompt }}
       run: |
         if [ -n "$API_URL_OVERRIDE" ]; then
           export IRONBEE_API_URL="$API_URL_OVERRIDE"
@@ -987,6 +1002,17 @@ runs:
             ARGS+=("$line")
           fi
         done < <(node "${{ github.action_path }}/scripts/resolve-plan.js" --secret-header-args)
+
+        # The caller's own prompt, which the first verification also carried,
+        # plus what the fix round says it repaired. Without the second half the
+        # run reads a repository that predates the fixes and reports them as
+        # unfixed; without the first it answers a narrower question than the
+        # verification it is repeating.
+        node "${{ github.action_path }}/scripts/build-reverify-prompt.js" \
+          .ironbee/fix-summary.txt .ironbee/reverify-prompt.txt || true
+        if [ -s .ironbee/reverify-prompt.txt ]; then
+          ARGS+=("--prompt-file" ".ironbee/reverify-prompt.txt")
+        fi
 
         set +e
         ironbee verify run web "${ARGS[@]}" > .ironbee/raw-output.txt
