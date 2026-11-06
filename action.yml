@@ -32,6 +32,10 @@ inputs:
       IronBee collector endpoint URL. Empty uses the CLI default — and leaving it
       empty is what lets the CLI resolve every other service URL to the same
       stage, since an explicit one here is how it infers which stage that is.
+      The application's own commands (app_start_command, app_restart_command)
+      run with the resolved URL as IRONBEE_COLLECTOR_URL and the key as
+      IRONBEE_API_KEY in their environment, so a service whose OTel collector
+      reads them ships its traces and logs to the verification session.
     required: false
     default: ''
   ironbee_console_url:
@@ -185,7 +189,10 @@ inputs:
     required: false
     default: ''
   app_start_command:
-    description: 'Command to start the application (e.g. "npm run dev").'
+    description: >-
+      Command to start the application (e.g. "npm run dev"). It runs with
+      IRONBEE_COLLECTOR_URL and IRONBEE_API_KEY in its environment, the
+      collector of this run's stage, for the application's own telemetry.
     required: false
     default: ''
   app_url:
@@ -215,7 +222,8 @@ inputs:
       running the pre-fix code, and the re-verification then reports a
       confident result about code that no longer exists. For a compose project
       whose services build from source, that command is
-      "docker compose up -d --build".
+      "docker compose up -d --build". Like app_start_command, it runs with
+      IRONBEE_COLLECTOR_URL and IRONBEE_API_KEY in its environment.
     required: false
     default: ''
   app_logs_command:
@@ -822,6 +830,12 @@ runs:
         APP_INSTALL_COMMAND: ${{ inputs.app_install_command }}
         APP_BUILD_COMMAND: ${{ inputs.app_build_command }}
         APP_START_COMMAND: ${{ inputs.app_start_command }}
+        # The application's own commands run with the collector of this run's
+        # stage and its key in their environment, so a service whose OTel
+        # collector reads these ships its traces and logs to the verification
+        # session. Nothing is written to disk for it.
+        IRONBEE_COLLECTOR_URL: ${{ steps.plan.outputs.collector_url }}
+        IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
       run: |
         mkdir -p .ironbee/artifacts
 
@@ -1078,6 +1092,9 @@ runs:
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
         APP_START_COMMAND: ${{ inputs.app_start_command }}
         APP_RESTART_COMMAND: ${{ inputs.app_restart_command }}
+        # The restarted application reports to the same collector as the first
+        # run (IRONBEE_API_KEY is already in this step's environment).
+        IRONBEE_COLLECTOR_URL: ${{ steps.plan.outputs.collector_url }}
         USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
       run: |
         if [ -n "$API_URL_OVERRIDE" ]; then

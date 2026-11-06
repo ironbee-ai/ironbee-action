@@ -279,6 +279,25 @@ function resolveTarget({ appUrl, appStartCommand, appPort }) {
   return { target: null, errors, warnings };
 }
 
+// ─── The collector the verified application reports to ──────────────────────
+
+/** The CLI's own default stage, the one an empty `ironbee_collector_url` means. */
+const DEFAULT_COLLECTOR_URL = 'https://collector.service.ironbee.ai';
+
+/**
+ * The collector URL handed to the application's own commands, so a service
+ * whose OTel collector reads `IRONBEE_COLLECTOR_URL` ships its traces and logs
+ * to the stage the verification runs on. An empty input is resolved here rather
+ * than passed through: the CLI treats empty as its default stage, but the
+ * application has no such fallback and would simply not ship.
+ */
+function resolveCollectorUrl({ collectorUrl }) {
+  if (present(collectorUrl)) {
+    return String(collectorUrl).trim();
+  }
+  return DEFAULT_COLLECTOR_URL;
+}
+
 // ─── The console the report links into ───────────────────────────────────────
 
 /** The last resort, matching the CLI's own. */
@@ -530,6 +549,7 @@ function skippedPlan(eventName) {
     verbose: false,
     excludeFiles: false,
     consoleUrl: '',
+    collectorUrl: '',
     timeoutFloorMinutes: 0,
     cliArgs: [],
     warnings: [],
@@ -698,6 +718,7 @@ function resolvePlan(input) {
     verbose: flags.verbose,
     excludeFiles: flags.excludeFiles,
     consoleUrl: resolveConsoleUrl({ consoleUrl: input.consoleUrl, collectorUrl: input.collectorUrl }),
+    collectorUrl: resolveCollectorUrl({ collectorUrl: input.collectorUrl }),
   };
 }
 
@@ -770,6 +791,7 @@ function writeOutputs(plan) {
     ['verbose', plan.verbose ? 'true' : 'false'],
     ['exclude_files', plan.excludeFiles ? 'true' : 'false'],
     ['console_url', plan.consoleUrl],
+    ['collector_url', plan.collectorUrl],
     ['timeout_floor_minutes', String(plan.timeoutFloorMinutes)],
   ];
   let body = outputs.map(([key, value]) => `${key}=${value}\n`).join('');
@@ -844,6 +866,7 @@ module.exports = {
   resolvePlan,
   parseBoolean,
   resolveConsoleUrl,
+  resolveCollectorUrl,
   parseHeaders,
   emitSecretHeaderArgs,
   resolveMode,

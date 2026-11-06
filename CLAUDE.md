@@ -14,6 +14,14 @@ Everything after the verdict is shared: the fix round, the commit, the PR, the r
 
 Platform mode skips every local-only setup step (Chromium, DevTools, MCP, `ironbee install`), which is most of the runner time.
 
+## The application's own telemetry
+
+`app_start_command` and `app_restart_command` run with `IRONBEE_COLLECTOR_URL` (the
+collector of this run's stage, resolved by `resolve-plan.js` so an empty input still
+names the default stage) and `IRONBEE_API_KEY` in their environment. A service whose
+OTel collector reads them ships its traces and logs into the verification session.
+Nothing is written to disk for it; the values live only in those steps' environments.
+
 ## How It Works (local mode)
 
 1. Installs `@ironbee-ai/cli` and `@anthropic-ai/claude-code` globally
