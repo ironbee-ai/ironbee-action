@@ -14,6 +14,7 @@ const {
   emitSecretHeaderArgs,
   parseBoolean,
   resolveConsoleUrl,
+  resolveCollectorUrl,
 } = require('../scripts/resolve-plan.js');
 
 /** A configuration that resolves cleanly, so each test changes one thing. */
@@ -974,4 +975,24 @@ test('plan: a skipped run reports no configuration errors', () => {
 
   assert.equal(plan.ok, true);
   assert.deepEqual(plan.errors, []);
+});
+
+// ─── The collector handed to the application ─────────────────────────────────
+
+test('resolveCollectorUrl: an explicit collector is handed over as named', () => {
+  assert.equal(
+    resolveCollectorUrl({ collectorUrl: ' https://collector.service.ironbee.dev ' }),
+    'https://collector.service.ironbee.dev',
+  );
+});
+
+test('resolveCollectorUrl: an empty collector resolves to the default stage, not to nothing', () => {
+  assert.equal(resolveCollectorUrl({ collectorUrl: '' }), 'https://collector.service.ironbee.ai');
+  assert.equal(resolveCollectorUrl({ collectorUrl: undefined }), 'https://collector.service.ironbee.ai');
+});
+
+test('plan: the collector the application reports to names the same stage as the console', () => {
+  const plan = resolvePlan(input({ collectorUrl: 'https://collector.service.ironbee.dev' }));
+  assert.equal(plan.collectorUrl, 'https://collector.service.ironbee.dev');
+  assert.equal(plan.consoleUrl, 'console.ironbee.dev');
 });
