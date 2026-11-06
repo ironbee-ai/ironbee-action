@@ -37,6 +37,8 @@ The verification itself can run in one of two places. Everything after it — th
 4. Commit the fixes — to the PR branch on a pull request, as a new PR otherwise
 5. Report on the pull request, with a link to the run in the IronBee Console
 
+When the repository is connected to IronBee (the GitHub App, or the GitLab connection), the platform writes a platform run's findings on the pull request itself: a check, inline comments with suggested fixes, and a summary. The action then leaves its own report comment out and keeps the report in the job's step summary; the `platform_publishes` output says which happened.
+
 ## Quick Start
 
 ```yaml
@@ -72,11 +74,11 @@ The action adapts its behavior based on the trigger event:
 
 | Trigger | Verification Mode | Fix Behavior |
 |---------|-------------------|-------------|
-| `pull_request` | Diff-based — verifies changed pages | Commits fixes to PR branch, posts verification report comment |
+| `pull_request` | Diff-based — verifies changed pages | Commits fixes to PR branch, posts verification report comment unless the platform publishes the run on the pull request itself |
 | `push` (main/master) | Diff-based — verifies changed pages | Creates fix PR automatically if issues found |
 | `workflow_dispatch` | Full — verifies entire application | Creates fix PR automatically if issues found |
 | `schedule` | Full — verifies entire application | Creates fix PR automatically if issues found |
-| `issue_comment` | Diff-based — verifies the pull request the comment is on (never switched off by `verification_auto`) | Commits fixes to the PR branch **only when the comment asks**, posts the report comment |
+| `issue_comment` | Diff-based — verifies the pull request the comment is on (never switched off by `verification_auto`) | Commits fixes to the PR branch **only when the comment asks**, posts the report comment unless the platform publishes the run on the pull request itself |
 
 ### PR Verification
 
@@ -86,7 +88,7 @@ on:
     types: [opened, synchronize]
 ```
 
-Reviews the PR diff, verifies affected pages, and posts a verification report comment. Fixes are committed directly to the PR branch.
+Reviews the PR diff, verifies affected pages, and posts a verification report comment — unless the platform publishes the run on the pull request itself. Fixes are committed directly to the PR branch.
 
 ### Push to Main
 
@@ -453,6 +455,7 @@ nobody validates is a setting that silently did not apply.
 | `job_id` | Verification job id — platform mode only |
 | `job_url` | IronBee Console link for the run — platform mode only, once the job has started |
 | `artifacts_url` | Download URL for verification evidence — **local mode only**. In platform mode the evidence is captured on the platform and lives in the Console; this output is empty |
+| `platform_publishes` | `true` when the platform publishes the run on the pull request itself, so the action posted no report comment; `false` otherwise, and always in local mode |
 
 ## How It Works
 

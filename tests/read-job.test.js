@@ -2,8 +2,13 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 
-const { summarize, verdictOf, consoleUrl, parseOutput } = require('../scripts/read-job.js');
+const {
+  summarize, verdictOf, consoleUrl, parseOutput, platformPublishes, writeOutputs,
+} = require('../scripts/read-job.js');
 
 const HOST = 'console.ironbee.dev';
 
@@ -163,4 +168,62 @@ test('summary: unparseable output says so', () => {
   const summary = summarize('<html>504 Gateway Timeout</html>', HOST);
   assert.equal(summary.verdict, 'unknown');
   assert.match(summary.failureMessage, /not a job or an error/);
+});
+
+// ─── Whether the platform publishes the run itself ───────────────────────────
+//
+// Only the presence of a publication counts. An older API leaves the field out,
+// which reads like null; a pending status is still a publication.
+
+test('publication: no publication key is false', () => {
+  assert.equal(summarize(JSON.stringify(job()), HOST).platformPublishes, false);
+});
+
+test('publication: null is false', () => {
+  assert.equal(summarize(JSON.stringify(job({ publication: null })), HOST).platformPublishes, false);
+});
+
+test('publication: a pending publication is true', () => {
+  const body = job({ publication: { provider: 'github', status: 'pending' } });
+  assert.equal(summarize(JSON.stringify(body), HOST).platformPublishes, true);
+});
+
+test('publication: an object without a provider is false', () => {
+  assert.equal(platformPublishes(job({ publication: {} })), false);
+  assert.equal(platformPublishes(job({ publication: { provider: '' } })), false);
+  assert.equal(platformPublishes(job({ publication: 'github' })), false);
+});
+
+test('publication: no job is false', () => {
+  assert.equal(summarize(JSON.stringify({ error: { message: 'x' } }), HOST).platformPublishes, false);
+  assert.equal(summarize('', HOST).platformPublishes, false);
+});
+
+// ─── The written outputs ─────────────────────────────────────────────────────
+
+function writtenOutputs(summary) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'read-job-'));
+  const file = path.join(dir, 'output');
+  const previous = process.env.GITHUB_OUTPUT;
+  process.env.GITHUB_OUTPUT = file;
+  try {
+    writeOutputs(summary);
+    return fs.readFileSync(file, 'utf8');
+  } finally {
+    if (previous === undefined) {
+      delete process.env.GITHUB_OUTPUT;
+    } else {
+      process.env.GITHUB_OUTPUT = previous;
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+// Never empty: the report step falls back from the re-verified job to the first
+// with `||`, and an empty value would read the other job's answer.
+test('outputs: platform_publishes is written as true or false', () => {
+  const published = job({ publication: { provider: 'gitlab', status: 'succeeded' } });
+  assert.match(writtenOutputs(summarize(JSON.stringify(published), HOST)), /^platform_publishes=true$/m);
+  assert.match(writtenOutputs(summarize(JSON.stringify(job()), HOST)), /^platform_publishes=false$/m);
+  assert.match(writtenOutputs(summarize('', HOST)), /^platform_publishes=false$/m);
 });

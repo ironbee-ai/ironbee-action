@@ -48,7 +48,8 @@ This is a **composite action** (`runs: using: composite`) — not a JS action. I
 action.yml                # Composite action definition — steps only
 scripts/
   resolve-plan.js         # mode, target, port, repo binding, CLI flags, budget floor
-  read-job.js             # `ironbee verify --json` output -> verdict / job_id / job_url
+  read-job.js             # `ironbee verify --json` output -> verdict / job_id / job_url /
+                          #   failure_code / platform_publishes
   build-report.js         # report markdown, from artifacts (local) or a job body (platform)
   build-fix-prompt.js     # fix-only prompt built from a failing verdict
 tests/
@@ -135,6 +136,7 @@ copied into `fallback`.
 - `mode` — where the verification ran (`platform` / `local`)
 - `job_id`, `job_url` — platform mode only
 - `artifacts_url` — local mode only; platform evidence lives in the Console
+- `platform_publishes` — `true` when the platform publishes the run on the pull request itself; `false` otherwise, and in local mode
 
 ## Key Conventions
 
@@ -145,6 +147,7 @@ copied into `fallback`.
 - Browser downloads skipped during npm install (`PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=true`)
 - IronBee hooks enforce verification flow (recording, screenshots, verdicts)
 - PR comments are created/updated (not duplicated) using GitHub API
+- No report comment when the job carries a `publication` (`platform_publishes=true` from `read-job.js`, the re-verified job's answer first): the platform writes that run on the pull request itself, and the report stays in the step summary. Only presence counts, never its `status`; an older API that leaves the field out reads as none
 - Evidence uploaded via `actions/upload-artifact@v4` with 30-day retention
 - PR comment includes a session-level IronBee Console link (above the verdict badge) and a per-cycle verification link (`?activityId=…&verificationId=…`) under each cycle heading; host from `ironbee_console_url`, or derived from the collector's stage when that is unset
 - User prompt passed via env var to prevent shell command substitution

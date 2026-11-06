@@ -180,6 +180,24 @@ test('action.yml: neither outcome path ships a fix the re-verification rejected'
   }
 });
 
+// The comment is left out when the platform publishes the run itself, judged
+// on the job the report was built from: the re-verified one when it ran. Read
+// from the first job alone, a re-verification would be judged by a stale answer.
+test('action.yml: the report comment reads the publication of the job the report shows', () => {
+  const start = ACTION.indexOf('- name: Post the report on the pull request');
+  assert.notEqual(start, -1);
+  const step = ACTION.slice(start, ACTION.indexOf('\n    - name:', start + 1));
+
+  assert.match(
+    step,
+    /PLATFORM_PUBLISHES: \$\{\{ steps\.job-reverified\.outputs\.platform_publishes \|\| steps\.job\.outputs\.platform_publishes \}\}/,
+  );
+  // Before the first `gh` call, so an older report comment is not updated either.
+  const guard = step.indexOf('"$PLATFORM_PUBLISHES" = "true"');
+  assert.notEqual(guard, -1);
+  assert.ok(guard < step.indexOf('gh api'));
+});
+
 // ─── The comment command ─────────────────────────────────────────────────────
 
 // The one line in this file that would be a remote code execution. A comment

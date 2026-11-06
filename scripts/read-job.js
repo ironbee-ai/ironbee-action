@@ -42,6 +42,20 @@ function consoleUrl(job, consoleHost) {
 }
 
 /**
+ * Whether the platform publishes this run on the pull request itself.
+ *
+ * The answer is "is there a publication", never its status: a pending delivery
+ * lands seconds after the run ends, and waiting for it would hold the runner
+ * for something the action does not act on. An older API leaves the field out,
+ * which means the same as null.
+ */
+function platformPublishes(job) {
+  const publication = job && job.publication;
+  return Boolean(publication && typeof publication === 'object'
+    && typeof publication.provider === 'string' && publication.provider !== '');
+}
+
+/**
  * Reads the captured stdout.
  *
  * Anything unparseable is reported as such rather than guessed at: the stream
@@ -78,6 +92,7 @@ function summarize(raw, consoleHost) {
       jobUrl: consoleUrl(outcome.job, consoleHost),
       failureCode: '',
       failureMessage: '',
+      platformPublishes: platformPublishes(outcome.job),
       job: outcome.job,
     };
   }
@@ -92,6 +107,7 @@ function summarize(raw, consoleHost) {
       // field its own answers are matched on.
       failureCode: typeof outcome.failure.code === 'string' ? outcome.failure.code : '',
       failureMessage: typeof outcome.failure.message === 'string' ? outcome.failure.message : '',
+      platformPublishes: false,
       job: null,
     };
   }
@@ -103,6 +119,7 @@ function summarize(raw, consoleHost) {
     failureMessage: outcome.kind === 'empty'
       ? 'the verification command produced no output'
       : 'the verification command produced output that is not a job or an error',
+    platformPublishes: false,
     job: null,
   };
 }
@@ -113,6 +130,9 @@ function writeOutputs(summary) {
     ['job_id', summary.jobId],
     ['job_url', summary.jobUrl],
     ['failure_code', summary.failureCode],
+    // Never empty: its readers fall back from the re-verified job to the first
+    // one with `||`, and an empty value would read the wrong job's answer.
+    ['platform_publishes', summary.platformPublishes ? 'true' : 'false'],
   ].map(([key, value]) => `${key}=${value}\n`).join('');
 
   const file = process.env.GITHUB_OUTPUT;
@@ -141,7 +161,7 @@ function main() {
   }
 }
 
-module.exports = { summarize, verdictOf, consoleUrl, parseOutput };
+module.exports = { summarize, verdictOf, consoleUrl, parseOutput, platformPublishes, writeOutputs };
 
 if (require.main === module) {
   main();

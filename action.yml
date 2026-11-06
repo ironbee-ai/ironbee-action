@@ -290,6 +290,9 @@ outputs:
   artifacts_url:
     description: 'Download URL for verification evidence — local mode only; platform evidence lives in the Console'
     value: ${{ steps.upload-artifacts.outputs.artifact-url }}
+  platform_publishes:
+    description: 'Whether the platform publishes the run on the pull request itself (true / false); when true the action posts no report comment'
+    value: ${{ steps.job-reverified.outputs.platform_publishes || steps.job.outputs.platform_publishes || 'false' }}
 
 runs:
   using: 'composite'
@@ -1341,7 +1344,17 @@ runs:
         GH_TOKEN: ${{ inputs.github_token }}
         BODY_FILE: ${{ steps.report.outputs.body_file }}
         PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        # The job the report was built from: the re-verified one when it ran.
+        PLATFORM_PUBLISHES: ${{ steps.job-reverified.outputs.platform_publishes || steps.job.outputs.platform_publishes }}
       run: |
+        # The platform writes this run on the pull request itself (a check,
+        # inline comments, a summary), so a comment from here would be a second
+        # summary. An older report comment is not updated either.
+        if [ "$PLATFORM_PUBLISHES" = "true" ]; then
+          echo "::notice::the platform publishes this run on the pull request itself; the report stays in the step summary"
+          exit 0
+        fi
+
         # Updated in place rather than appended to: a PR that is pushed to
         # repeatedly would otherwise collect one comment per run.
         EXISTING_COMMENT=$(gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments \
