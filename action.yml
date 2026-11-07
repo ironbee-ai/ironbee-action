@@ -490,7 +490,12 @@ runs:
       env:
         APP_URL: ${{ inputs.app_url }}
       run: |
-        STATUS=$(curl -o /dev/null -s -w '%{http_code}' --max-time 15 -L "$APP_URL" || echo "000")
+        # curl prints 000 itself when the connection fails, so nothing is appended to
+        # it; an empty answer is a curl that could not run at all.
+        STATUS=$(curl -o /dev/null -s -w '%{http_code}' --max-time 15 -L "$APP_URL" || true)
+        if [ -z "$STATUS" ]; then
+          STATUS="000"
+        fi
 
         if [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ]; then
           echo "::error::$APP_URL answers $STATUS — it is behind deployment protection."
@@ -1202,7 +1207,7 @@ runs:
         SESSION_ID=""
 
         # Prefer the most recently modified verdict.json (has both status and session_id)
-        VERDICT_FILE=$(find .ironbee/sessions -name "verdict.json" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+        VERDICT_FILE=$(find .ironbee/sessions -name "verdict.json" -type f 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1)
         if [ -n "$VERDICT_FILE" ] && [ -f "$VERDICT_FILE" ]; then
           STATUS=$(node -e "const v=JSON.parse(require('fs').readFileSync('$VERDICT_FILE','utf8'));console.log(v.status||'unknown')" 2>/dev/null || echo "unknown")
           SESSION_ID=$(basename "$(dirname "$VERDICT_FILE")")
@@ -1215,7 +1220,7 @@ runs:
 
         # Fallback: derive status/session_id from the latest verdict_write event in actions.jsonl
         if [ -z "$SESSION_ID" ] || [ "$STATUS" = "unknown" ]; then
-          ACTIONS_FILE=$(find .ironbee/sessions -name "actions.jsonl" -type f 2>/dev/null | xargs ls -t 2>/dev/null | head -1)
+          ACTIONS_FILE=$(find .ironbee/sessions -name "actions.jsonl" -type f 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1)
           if [ -n "$ACTIONS_FILE" ] && [ -f "$ACTIONS_FILE" ]; then
             EXTRACTED=$(ACTIONS_FILE="$ACTIONS_FILE" node -e "
               const lines=require('fs').readFileSync(process.env.ACTIONS_FILE,'utf8').split('\n').filter(Boolean);
