@@ -216,8 +216,9 @@ inputs:
     description: >-
       Command that restarts the application so it picks up the fixes, run
       between the fix round and the re-verification. Empty stops the process
-      this action started and re-runs app_start_command, which is right only
-      when that command runs the application itself: one that hands off — to
+      this action started and re-runs app_build_command (when set) and
+      app_start_command, which is right only when that command runs the
+      application itself: one that hands off — to
       docker compose, a process manager, a service — leaves the application
       running the pre-fix code, and the re-verification then reports a
       confident result about code that no longer exists. For a compose project
@@ -300,10 +301,12 @@ runs:
     # ── Setup ──────────────────────────────────────────────────────────
     - name: Fetch git history for diff
       shell: bash
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
       run: |
         # Unshallow so git diff / git log always work (even single-commit repos)
         git fetch --unshallow origin 2>/dev/null || true
-        git fetch origin ${{ github.event.pull_request.base.ref || '' }} --depth=50 2>/dev/null || true
+        git fetch origin ${BASE_REF:+"$BASE_REF"} --depth=50 2>/dev/null || true
 
     - name: Setup Node.js
       uses: actions/setup-node@v4
@@ -341,9 +344,10 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         ERROR: ${{ steps.command.outputs.error }}
+        ISSUE_NUMBER: ${{ github.event.issue.number }}
       run: |
         printf '%s\n' "$ERROR" > .ironbee-command-error.txt
-        gh api "repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments" \
+        gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" \
           -F "body=@.ironbee-command-error.txt" >/dev/null
         rm -f .ironbee-command-error.txt
         echo "::error::$ERROR"
@@ -359,8 +363,9 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        COMMENT_ID: ${{ github.event.comment.id }}
       run: |
-        gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+        gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
           -f content=eyes >/dev/null
 
     # The pull request a comment names is not on the event: `issue_comment`
@@ -368,15 +373,17 @@ runs:
     # It decides one thing here — whether this is a fork — and the plan refuses
     # the run if it is. A comment run holds this repository's secrets, so
     # building and starting a fork's code under it hands them to whoever opened
-    # the pull request.
+    # the pull request. Run on every comment, whatever the parser made of it:
+    # the plan refuses a comment run that has no answer here.
     - name: Resolve the pull request behind the comment
       id: comment-pr
-      if: github.event_name == 'issue_comment' && steps.command.outputs.ok == 'true'
+      if: github.event_name == 'issue_comment'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github_token }}
+        ISSUE_NUMBER: ${{ github.event.issue.number }}
       run: |
-        PR_JSON="$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.issue.number }}")"
+        PR_JSON="$(gh api "repos/${{ github.repository }}/pulls/${ISSUE_NUMBER}")"
         HEAD_REPO="$(printf '%s' "$PR_JSON" | jq -r '.head.repo.full_name')"
         if [ "$HEAD_REPO" != "${{ github.repository }}" ]; then
           echo "is_fork=true" >> "$GITHUB_OUTPUT"
@@ -438,10 +445,12 @@ runs:
         INPUT_IRONBEE_EXTRA_CONFIG: ${{ inputs.ironbee_extra_config }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
         REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        GH_TOKEN: ${{ inputs.github_token }}
         # The pull_request event carries the answer; a comment event does not,
         # so the step above reads it back and both arrive here as one flag.
         IS_FORK: ${{ github.event_name == 'issue_comment' && steps.comment-pr.outputs.is_fork || github.event.pull_request.head.repo.fork }}
         COMMAND_FIX: ${{ steps.command.outputs.fix }}
+        COMMAND_MATCHED: ${{ steps.command.outputs.matched }}
         EVENT_NAME: ${{ github.event_name }}
         # A comment's pull request is an issue number on its own event.
         PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
@@ -449,6 +458,16 @@ runs:
         BEFORE_SHA: ${{ github.event.before }}
       working-directory: ${{ inputs.working_directory }}
       run: |
+        # A scheduled run's event carries no repository, and an empty answer
+        # reads as public. Asked of the API instead; still empty if it cannot say.
+        # gh prints the error body on stdout when the call fails, so that is dropped.
+        if [ -z "$REPOSITORY_PRIVATE" ]; then
+          if ! REPOSITORY_PRIVATE="$(gh api "repos/${{ github.repository }}" --jq '.private' 2>/dev/null)"; then
+            REPOSITORY_PRIVATE=""
+          fi
+          export REPOSITORY_PRIVATE
+        fi
+
         # The base of a push is a SHA this checkout may not have: the first push
         # of a branch reports all zeros, and a force-push can name a commit that
         # is gone. Both are forty hex characters and would pass every shape
@@ -489,10 +508,28 @@ runs:
       shell: bash
       env:
         APP_URL: ${{ inputs.app_url }}
+        INPUT_APP_HEADERS: ${{ inputs.app_headers }}
+        INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
       run: |
+        # The headers the run will send, so a protection bypass passes here too.
+        # Only a platform run sends them; the local agent's browser does not.
+        # Read into this shell and handed to curl on stdin, never as arguments.
+        HEADER_LINES=""
+        if [ "${{ steps.plan.outputs.mode }}" = "platform" ]; then
+          HEADER_LINES="$(node "${{ github.action_path }}/scripts/resolve-plan.js" --header-lines)"
+        fi
+        CURL_ARGS=(-o /dev/null -s -w '%{http_code}' --max-time 15)
+        if [ -n "$HEADER_LINES" ]; then
+          # Redirects not followed: curl repeats custom headers to every host it
+          # is redirected to, and these carry secrets.
+          CURL_ARGS+=(-H @-)
+        else
+          CURL_ARGS+=(-L)
+        fi
+
         # curl prints 000 itself when the connection fails, so nothing is appended to
         # it; an empty answer is a curl that could not run at all.
-        STATUS=$(curl -o /dev/null -s -w '%{http_code}' --max-time 15 -L "$APP_URL" || true)
+        STATUS=$(printf '%s\n' "$HEADER_LINES" | curl "${CURL_ARGS[@]}" "$APP_URL" || true)
         if [ -z "$STATUS" ]; then
           STATUS="000"
         fi
@@ -500,7 +537,7 @@ runs:
         if [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ]; then
           echo "::error::$APP_URL answers $STATUS — it is behind deployment protection."
           echo "::error::The verification would report on the login page rather than on the application."
-          echo "::error::Verify the application on this runner instead: set app_start_command and app_port, and leave app_url empty."
+          echo "::error::Pass its bypass header in app_secret_headers, or verify the application on this runner instead: set app_start_command and app_port, and leave app_url empty."
           exit 1
         fi
 
@@ -651,12 +688,17 @@ runs:
         IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
       run: |
         if [ "${{ steps.plan.outputs.exclude_files }}" = "true" ]; then
-          echo ".mcp.json" >> .git/info/exclude
-          echo ".ironbee/" >> .git/info/exclude
-          echo ".claude/settings.json" >> .git/info/exclude
-          echo ".claude/skills/ironbee-*.md" >> .git/info/exclude
-          echo ".claude/rules/ironbee-*.md" >> .git/info/exclude
-          echo ".claude/commands/ironbee-*.md" >> .git/info/exclude
+          # Asked of git: in a subdirectory `.git` is not here, and the patterns
+          # are read from the repository root, so they carry this directory's prefix.
+          EXCLUDE_FILE="$(git rev-parse --git-path info/exclude)"
+          PREFIX="$(git rev-parse --show-prefix)"
+          mkdir -p "$(dirname "$EXCLUDE_FILE")"
+          echo "${PREFIX}.mcp.json" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.ironbee/" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/settings.json" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/skills/ironbee-*.md" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/rules/ironbee-*.md" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/commands/ironbee-*.md" >> "$EXCLUDE_FILE"
         fi
 
         ironbee install --client claude
@@ -688,36 +730,49 @@ runs:
       working-directory: ${{ inputs.working_directory }}
       env:
         USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
+        DIFF_BASE: ${{ steps.plan.outputs.diff_base }}
+        CAN_FIX: ${{ steps.plan.outputs.can_fix }}
+        APP_PORT: ${{ steps.plan.outputs.target_port }}
+        # Event text — a title, branch names — reaches the script as values only.
+        # Each pair is one event's: a pull request's, or the comment step's.
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        PR_TITLE: ${{ github.event.pull_request.title || steps.comment-pr.outputs.title }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref || steps.comment-pr.outputs.base_ref }}
+        REF_NAME: ${{ github.ref_name }}
       run: |
         ARTIFACTS_DIR="$(pwd)/.ironbee/artifacts"
 
         # Determine trigger context and diff target
         DIFF_TARGET=""
         if [ "${{ github.event_name }}" = "pull_request" ]; then
-          CONTEXT="Pull Request #${{ github.event.pull_request.number }}: ${{ github.event.pull_request.title }}"
-          DIFF_TARGET="origin/${{ github.event.pull_request.base.ref }}"
+          CONTEXT="Pull Request #${PR_NUMBER}: ${PR_TITLE}"
+          DIFF_TARGET="origin/${PR_BASE_REF}"
         elif [ "${{ github.event_name }}" = "issue_comment" ]; then
-          CONTEXT="Pull Request #${{ github.event.issue.number }}: ${{ steps.comment-pr.outputs.title }}"
-          DIFF_TARGET="origin/${{ steps.comment-pr.outputs.base_ref }}"
+          CONTEXT="Pull Request #${PR_NUMBER}: ${PR_TITLE}"
+          DIFF_TARGET="origin/${PR_BASE_REF}"
         elif [ "${{ github.event_name }}" = "push" ]; then
-          CONTEXT="Push to ${{ github.ref_name }} (commit ${{ github.sha }})"
-          if git rev-parse HEAD~1 >/dev/null 2>&1; then
-            DIFF_TARGET="HEAD~1"
+          CONTEXT="Push to ${REF_NAME} (commit ${{ github.sha }})"
+          # The plan's base, the push's own `before` first: the parent alone
+          # would narrow a multi-commit push to its last commit.
+          if [ -n "$DIFF_BASE" ]; then
+            DIFF_TARGET="$DIFF_BASE"
           else
             DIFF_TARGET="$(git hash-object -t tree /dev/null)"
           fi
         elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-          CONTEXT="Manual run on ${{ github.ref_name }}"
+          CONTEXT="Manual run on ${REF_NAME}"
         elif [ "${{ github.event_name }}" = "schedule" ]; then
-          CONTEXT="Scheduled run on ${{ github.ref_name }}"
+          CONTEXT="Scheduled run on ${REF_NAME}"
         else
-          CONTEXT="${{ github.event_name }} on ${{ github.ref_name }}"
+          CONTEXT="${{ github.event_name }} on ${REF_NAME}"
         fi
 
         # Build the prompt
         PROMPT=/tmp/ironbee-prompt.md
-        if [ -n "$DIFF_TARGET" ]; then
+        if [ -n "$DIFF_TARGET" ] && [ "$CAN_FIX" = "true" ]; then
           echo "You are running in CI. Verify the code changes and fix any issues found." > "$PROMPT"
+        elif [ -n "$DIFF_TARGET" ]; then
+          echo "You are running in CI. Verify the code changes and report any issues found." > "$PROMPT"
         else
           echo "You are running in CI. Verify that the application is working correctly." > "$PROMPT"
         fi
@@ -729,7 +784,7 @@ runs:
         fi
 
         # App configuration
-        if [ -n "${{ inputs.app_install_command }}" ] || [ -n "${{ inputs.app_build_command }}" ] || [ -n "${{ inputs.app_start_command }}" ] || [ -n "${{ inputs.app_url }}" ]; then
+        if [ -n "${{ inputs.app_install_command }}" ] || [ -n "${{ inputs.app_build_command }}" ] || [ -n "${{ inputs.app_start_command }}" ] || [ -n "${{ inputs.app_url }}" ] || [ -n "$APP_PORT" ]; then
           echo "" >> "$PROMPT"
           echo "## Application" >> "$PROMPT"
           if [ -n "${{ inputs.app_install_command }}" ]; then
@@ -743,6 +798,10 @@ runs:
           fi
           if [ -n "${{ inputs.app_url }}" ]; then
             echo "- Application URL: ${{ inputs.app_url }}" >> "$PROMPT"
+          fi
+          # The plan's port, the one in app_url when both name one.
+          if [ -n "$APP_PORT" ]; then
+            echo "- Port the application listens on: ${APP_PORT}" >> "$PROMPT"
           fi
         fi
 
@@ -774,15 +833,22 @@ runs:
         # Core instruction: run the IronBee verify command
         echo "" >> "$PROMPT"
         echo "## Task" >> "$PROMPT"
+        # Fixing off (the setting, or a comment without --fix): the agent reports
+        # and edits nothing, and the commit steps land nothing either.
+        if [ "$CAN_FIX" = "true" ]; then
+          ON_FAIL="fix the issues and re-verify"
+        else
+          ON_FAIL="report the issues and stop; do not edit any files"
+        fi
         if [ -n "$DIFF_TARGET" ]; then
           echo "1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`" >> "$PROMPT"
           echo "   IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target." >> "$PROMPT"
           echo "2. Run /ironbee-verify to perform verification" >> "$PROMPT"
-          echo "3. If verification fails, fix the issues and re-verify" >> "$PROMPT"
+          echo "3. If verification fails, ${ON_FAIL}" >> "$PROMPT"
           echo "Do not commit, push, or open a pull request — that is handled for you." >> "$PROMPT"
         else
           echo "1. Run /ironbee-verify full to verify the application is working correctly" >> "$PROMPT"
-          echo "2. If verification fails, fix the issues and re-verify" >> "$PROMPT"
+          echo "2. If verification fails, ${ON_FAIL}" >> "$PROMPT"
           echo "Do not commit, push, or open a pull request — that is handled for you." >> "$PROMPT"
         fi
 
@@ -1098,6 +1164,7 @@ runs:
         API_URL_OVERRIDE: ${{ inputs.ironbee_api_url }}
         CLI_ARGS: ${{ steps.plan.outputs.cli_args }}
         INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
+        APP_BUILD_COMMAND: ${{ inputs.app_build_command }}
         APP_START_COMMAND: ${{ inputs.app_start_command }}
         APP_RESTART_COMMAND: ${{ inputs.app_restart_command }}
         # The restarted application reports to the same collector as the first
@@ -1135,6 +1202,15 @@ runs:
           if [ -f .ironbee/app.pid ]; then
             kill "$(cat .ironbee/app.pid)" 2>/dev/null || true
             sleep 2
+          fi
+          # Rebuilt first: a start command that serves built output would
+          # otherwise serve the pre-fix build.
+          if [ -n "$APP_BUILD_COMMAND" ]; then
+            echo "Rebuilding the application with app_build_command"
+            bash -c "$APP_BUILD_COMMAND" >> .ironbee/artifacts/app.log 2>&1 || {
+              echo "::error::app_build_command failed after the fix; the re-verification would run against the pre-fix application"
+              exit 1
+            }
           fi
           nohup bash -c "$APP_START_COMMAND" >> .ironbee/artifacts/app.log 2>&1 &
           echo $! > .ironbee/app.pid
@@ -1314,6 +1390,9 @@ runs:
       if: always() && steps.plan.outputs.mode != ''
       shell: bash
       working-directory: ${{ inputs.working_directory }}
+      env:
+        # Through the environment: it is the service's text, not this file's.
+        FAILURE_MESSAGE: ${{ steps.job.outputs.failure_message }}
       run: |
         BODY_FILE="$(pwd)/.ironbee/report.md"
         mkdir -p .ironbee
@@ -1326,6 +1405,7 @@ runs:
             --job-url "${{ steps.job-reverified.outputs.job_url || steps.job.outputs.job_url }}" \
             --earlier-job-url "${{ steps.job-reverified.outputs.job_url && steps.job.outputs.job_url || '' }}" \
             --failure-code "${{ steps.job.outputs.failure_code }}" \
+            --failure-message "$FAILURE_MESSAGE" \
             > "$BODY_FILE"
         else
           node "${{ github.action_path }}/scripts/build-report.js" \
@@ -1392,6 +1472,7 @@ runs:
       if: >-
         always() && steps.plan.outputs.mode != '' &&
         (github.event_name == 'pull_request' || github.event_name == 'issue_comment') &&
+        steps.plan.outputs.can_fix == 'true' &&
         github.event.pull_request.head.repo.fork != true &&
         steps.comment-pr.outputs.is_fork != 'true' &&
         steps.job-reverified.outputs.verdict != 'fail' &&
@@ -1441,6 +1522,7 @@ runs:
       if: >-
         always() && steps.plan.outputs.mode != '' &&
         github.event_name != 'pull_request' && github.event_name != 'issue_comment' &&
+        steps.plan.outputs.can_fix == 'true' &&
         steps.job-reverified.outputs.verdict != 'fail' &&
         steps.verdict.outputs.status != 'fail'
       shell: bash
@@ -1448,6 +1530,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         BODY_FILE: ${{ steps.report.outputs.body_file }}
+        REF_NAME: ${{ github.ref_name }}
       run: |
         ORIGINAL_SHA="${{ github.sha }}"
 
@@ -1489,13 +1572,13 @@ runs:
           gh pr create \
             --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
             --body-file "$BODY_FILE" \
-            --base "${{ github.ref_name }}" \
+            --base "$REF_NAME" \
             --head "$BRANCH"
         else
           gh pr create \
             --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
             --body "IronBee applied these fixes. The verification report is not available for this run." \
-            --base "${{ github.ref_name }}" \
+            --base "$REF_NAME" \
             --head "$BRANCH"
         fi
 
@@ -1547,6 +1630,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
         VERDICT: ${{ steps.job-reverified.outputs.verdict || steps.job.outputs.verdict || steps.verdict.outputs.status }}
+        COMMENT_ID: ${{ github.event.comment.id }}
       run: |
         # A pass is the only +1. `not_applicable`, a missing verdict and an
         # error all land on -1 for the same reason the gate treats them alike:
@@ -1556,14 +1640,14 @@ runs:
         else
           CONTENT="-1"
         fi
-        gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+        gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
           -f content="$CONTENT" >/dev/null
         # The eyes reaction said "running"; leaving it would say so forever.
-        EYES=$(gh api "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions" \
+        EYES=$(gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
           --jq '.[] | select(.content == "eyes") | .id' | head -1)
         if [ -n "$EYES" ]; then
           gh api -X DELETE \
-            "repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions/$EYES" \
+            "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions/$EYES" \
             >/dev/null || true
         fi
 

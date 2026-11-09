@@ -12,6 +12,8 @@ const {
   timeoutFloorMinutes,
   parseHeaders,
   emitSecretHeaderArgs,
+  emitHeaderLines,
+  resolvePushBase,
   parseBoolean,
   resolveConsoleUrl,
   resolveCollectorUrl,
@@ -26,6 +28,8 @@ function input(overrides) {
     verificationMode: 'auto',
     repositoryPrivate: 'false',
     isFork: 'false',
+    // Read on a comment run only: the parser matched the command.
+    commandMatched: 'true',
     eventName: 'pull_request',
     prNumber: '42',
     sha: 'a'.repeat(40),
@@ -680,6 +684,39 @@ test('plan: a comment on a fork pull request is refused for holding secrets', ()
   assert.match(plan.errors.join(' '), /holds this repository's secrets/);
 });
 
+// The workflow's filter is a prefix match, so `/ironbee-verify.` reaches the
+// action as a comment the parser reads as no command at all. Nothing was asked
+// for: no mode, so nothing is started, and no fork answer is needed to say so.
+test('plan: a comment that is not the command is skipped, whatever the fork answer', () => {
+  for (const isFork of ['', 'false', 'true']) {
+    const plan = resolvePlan(comment({ commandMatched: 'false', isFork, commandFix: 'true' }));
+
+    assert.equal(plan.skipped, true, isFork);
+    assert.equal(plan.mode, null, isFork);
+    assert.equal(plan.canFix, false, isFork);
+    assert.deepEqual(plan.errors, [], isFork);
+  }
+});
+
+test('plan: a comment with no parser answer is skipped too', () => {
+  assert.equal(resolvePlan(comment({ commandMatched: '' })).skipped, true);
+});
+
+// A comment run holds the secrets, so a missing fork answer is a refusal, not
+// a "not a fork": the lookup that gives it is what keeps a fork's code off here.
+test('plan: a comment run with no fork answer is refused', () => {
+  const plan = resolvePlan(comment({ isFork: '' }));
+
+  assert.equal(plan.ok, false);
+  assert.match(plan.errors.join(' '), /could not tell whether this pull request comes from a fork/);
+});
+
+// Only the comment event needs the answer spelt out: a push has no fork, and a
+// pull request's own payload carries it.
+test('plan: an empty fork answer on a push is not a refusal', () => {
+  assert.equal(resolvePlan(input({ eventName: 'push', isFork: '' })).ok, true);
+});
+
 // ─── The budget floor ────────────────────────────────────────────────────────
 
 test('floor: the default job timeout produces a floor above the queue wait', () => {
@@ -783,6 +820,41 @@ test('emitSecretHeaderArgs: writes nothing when none are configured', () => {
   process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
   try {
     emitSecretHeaderArgs();
+  } finally {
+    process.stdout.write = realWrite;
+  }
+
+  assert.equal(written.join(''), '');
+});
+
+// The reachability check sends what the run will send, so a protection bypass
+// passes it too — plain and secret alike, in the shape `curl -H @-` reads.
+test('emitHeaderLines: every configured header, one per line', () => {
+  const written = [];
+  const realWrite = process.stdout.write;
+  process.env.INPUT_APP_HEADERS = 'X-E2E: 1\n# a comment';
+  process.env.INPUT_APP_SECRET_HEADERS = 'x-vercel-protection-bypass: the-secret';
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  try {
+    emitHeaderLines();
+  } finally {
+    process.stdout.write = realWrite;
+    delete process.env.INPUT_APP_HEADERS;
+    delete process.env.INPUT_APP_SECRET_HEADERS;
+  }
+
+  assert.deepEqual(written.join('').trim().split('\n'), [
+    'X-E2E: 1',
+    'x-vercel-protection-bypass: the-secret',
+  ]);
+});
+
+test('emitHeaderLines: writes nothing when none are configured', () => {
+  const written = [];
+  const realWrite = process.stdout.write;
+  process.stdout.write = (chunk) => { written.push(String(chunk)); return true; };
+  try {
+    emitHeaderLines();
   } finally {
     process.stdout.write = realWrite;
   }
@@ -931,6 +1003,62 @@ test('binding: an empty base with no parent declares no changeset', () => {
     }),
     ['--commit', 'a'.repeat(40), '--no-diff'],
   );
+});
+
+// ─── The base a local run diffs a push against ───────────────────────────────
+//
+// The same rule the binding uses, so a local run reviews what a platform run
+// binds — every commit in the push, not only its tip.
+
+test('push base: the event\'s own base spans the whole push', () => {
+  assert.equal(
+    resolvePushBase({ beforeSha: 'b'.repeat(40), baseUsable: true, baseEmpty: false, parentSha: 'c'.repeat(40) }),
+    'b'.repeat(40),
+  );
+});
+
+test('push base: an unusable or empty base falls back to the parent', () => {
+  assert.equal(
+    resolvePushBase({ beforeSha: 'b'.repeat(40), baseUsable: false, baseEmpty: false, parentSha: 'c'.repeat(40) }),
+    'c'.repeat(40),
+  );
+  assert.equal(
+    resolvePushBase({ beforeSha: 'b'.repeat(40), baseUsable: true, baseEmpty: true, parentSha: 'c'.repeat(40) }),
+    'c'.repeat(40),
+  );
+});
+
+test('push base: nothing usable is no base', () => {
+  assert.equal(resolvePushBase({ beforeSha: '', baseUsable: false, baseEmpty: false, parentSha: '' }), '');
+});
+
+test('plan: a local push run carries the push\'s base for its prompt', () => {
+  const plan = resolvePlan(input({
+    verificationMode: 'local',
+    anthropicApiKey: 'sk-ant',
+    eventName: 'push',
+    beforeSha: 'b'.repeat(40),
+    baseUsable: 'true',
+    parentSha: 'c'.repeat(40),
+  }));
+
+  assert.equal(plan.ok, true);
+  assert.equal(plan.diffBase, 'b'.repeat(40));
+});
+
+// Repository binding is a platform setting; the local diff does not follow it.
+test('plan: the push base does not depend on the repository binding', () => {
+  const plan = resolvePlan(input({
+    eventName: 'push', bindRepository: 'false', beforeSha: 'b'.repeat(40), baseUsable: 'true',
+  }));
+  assert.equal(plan.diffBase, 'b'.repeat(40));
+});
+
+test('plan: only a push carries a base', () => {
+  for (const eventName of ['pull_request', 'issue_comment', 'workflow_dispatch', 'schedule']) {
+    const plan = resolvePlan(input({ eventName, beforeSha: 'b'.repeat(40), baseUsable: 'true', parentSha: 'c'.repeat(40) }));
+    assert.equal(plan.diffBase, '', eventName);
+  }
 });
 
 // ─── verification_auto ───────────────────────────────────────────────────────

@@ -79,6 +79,9 @@ test('a checkout failure carries the recovery hint', () => {
   }), OPTIONS);
 
   assert.match(report, /Install the IronBee GitHub App/);
+  // The input's real name: a hint naming one the action does not declare is
+  // silently ignored when copied into a workflow.
+  assert.match(report, /`ironbee_bind_repository: false`/);
 });
 
 test('an unrelated failure carries no hint', () => {

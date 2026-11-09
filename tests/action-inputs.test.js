@@ -250,3 +250,165 @@ test('action.yml: the command\'s prompt takes precedence over the configured one
     assert.match(line, /steps\.command\.outputs\.prompt \|\| inputs\.verification_prompt/, line.trim());
   }
 });
+
+// ─── Step bodies ─────────────────────────────────────────────────────────────
+
+/** One step, from its `- name:` to the next step's. */
+function step(name) {
+  const start = ACTION.indexOf(`- name: ${name}`);
+  assert.notEqual(start, -1, `${name} not found`);
+  const end = ACTION.indexOf('\n    - name:', start + 1);
+  return ACTION.slice(start, end === -1 ? ACTION.length : end);
+}
+
+/** The step's `if:` and `env:`, everything above its script. */
+function header(name) {
+  const body = step(name);
+  return body.slice(0, body.indexOf('run: |'));
+}
+
+// The fork answer is what keeps a fork's code off a run holding the secrets, so
+// it may not hinge on how the parser read the comment: `/ironbee-verify.`
+// passes a prefix filter, parses as no command, and used to skip the lookup.
+test('action.yml: the fork lookup runs on every comment, whatever the parser said', () => {
+  const condition = header('Resolve the pull request behind the comment');
+
+  assert.match(condition, /if: github\.event_name == 'issue_comment'\n/);
+  assert.doesNotMatch(condition, /steps\.command\.outputs/);
+  assert.match(header('Resolve the verification plan'), /COMMAND_MATCHED: \$\{\{ steps\.command\.outputs\.matched \}\}/);
+});
+
+// Fixing off — the setting, or a comment without --fix — has to hold in local
+// mode too, where the agent edits the tree itself: neither path may land a fix.
+test('action.yml: neither outcome path lands a fix when fixing is off', () => {
+  for (const name of ['Commit the fixes to the pull request branch', 'Create fix PR']) {
+    assert.match(header(name), /steps\.plan\.outputs\.can_fix == 'true'/, name);
+  }
+});
+
+test('action.yml: the local prompt asks for fixes only when fixing is on', () => {
+  const body = step('Build verification prompt');
+
+  assert.match(body, /CAN_FIX: \$\{\{ steps\.plan\.outputs\.can_fix \}\}/);
+  assert.match(body, /do not edit any files/);
+  // Every "fix the issues" instruction sits behind the flag.
+  assert.doesNotMatch(body, /If verification fails, fix the issues/);
+});
+
+// A push can carry several commits; the parent alone reviews only the last.
+test('action.yml: a local push run diffs from the plan\'s base, not HEAD~1', () => {
+  const body = step('Build verification prompt');
+
+  assert.match(body, /DIFF_BASE: \$\{\{ steps\.plan\.outputs\.diff_base \}\}/);
+  assert.doesNotMatch(body, /DIFF_TARGET="HEAD~1"/);
+});
+
+// A start command with no URL leaves the agent nothing to open but the port.
+test('action.yml: the local prompt names the application\'s port', () => {
+  const body = step('Build verification prompt');
+
+  assert.match(body, /APP_PORT: \$\{\{ steps\.plan\.outputs\.target_port \}\}/);
+  assert.match(body, /Port the application listens on: \$\{APP_PORT\}/);
+});
+
+// In a subdirectory `.git` is not where the step runs.
+test('action.yml: the exclude file is located by git, not by a relative path', () => {
+  const body = step('Setup IronBee for Claude');
+
+  assert.match(body, /git rev-parse --git-path info\/exclude/);
+  assert.doesNotMatch(body, />> \.git\/info\/exclude/);
+});
+
+// A start command that serves built output would serve the pre-fix build.
+test('action.yml: the default restart rebuilds before it starts', () => {
+  const body = step('Re-verify after the fix');
+  const restart = body.slice(body.indexOf('kill "$(cat .ironbee/app.pid)"'));
+
+  assert.match(header('Re-verify after the fix'), /APP_BUILD_COMMAND: \$\{\{ inputs\.app_build_command \}\}/);
+  const build = restart.indexOf('bash -c "$APP_BUILD_COMMAND"');
+  assert.notEqual(build, -1);
+  assert.ok(build < restart.indexOf('bash -c "$APP_START_COMMAND"'));
+});
+
+// The run sends its headers, so the check has to: otherwise a protection bypass
+// configured for the run is refused here as deployment protection.
+test('action.yml: the reachability check sends the run\'s headers, never as arguments', () => {
+  const body = step('Check the deployment is reachable');
+
+  assert.match(body, /resolve-plan\.js" --header-lines/);
+  assert.match(body, /CURL_ARGS\+=\(-H @-\)/);
+  // A redirect would carry the headers to another host.
+  const withHeaders = body.slice(body.indexOf('if [ -n "$HEADER_LINES" ]'), body.indexOf('else', body.indexOf('if [ -n "$HEADER_LINES" ]')));
+  assert.doesNotMatch(withHeaders, /-L/);
+});
+
+// The service's text reaches the shell as a value, never as script.
+test('action.yml: the report carries the failure message through the environment', () => {
+  const body = step('Build the verification report');
+
+  assert.match(body, /FAILURE_MESSAGE: \$\{\{ steps\.job\.outputs\.failure_message \}\}/);
+  assert.match(body, /--failure-message "\$FAILURE_MESSAGE"/);
+  assert.doesNotMatch(body, /run: \|[\s\S]*outputs\.failure_message/);
+});
+
+// A scheduled run's event has no repository object, and an empty visibility
+// reads as public in `auto` mode.
+test('action.yml: the plan asks the API for the visibility the event left out', () => {
+  const body = step('Resolve the verification plan');
+
+  assert.match(body, /GH_TOKEN: \$\{\{ inputs\.github_token \}\}/);
+  assert.match(body, /if \[ -z "\$REPOSITORY_PRIVATE" \]; then/);
+  assert.match(body, /gh api "repos\/\$\{\{ github\.repository \}\}" --jq '\.private'/);
+  // Before the script reads it.
+  assert.ok(body.indexOf('export REPOSITORY_PRIVATE') < body.indexOf('scripts/resolve-plan.js'));
+});
+
+// ─── Event text never becomes script ─────────────────────────────────────────
+
+/** Every step's `run:` script, block or single-line, with its starting line. */
+function runScripts() {
+  const lines = ACTION.split('\n');
+  const scripts = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(/^(\s+)run:\s*(.*)$/);
+    if (!match) {
+      continue;
+    }
+    const indent = match[1].length;
+    if (match[2] !== '|' && match[2] !== '|-' && match[2] !== '>-') {
+      scripts.push({ line: index + 1, text: match[2] });
+      continue;
+    }
+    const body = [];
+    let next = index + 1;
+    while (next < lines.length
+        && (lines[next].trim() === '' || lines[next].match(/^\s*/)[0].length > indent)) {
+      body.push(lines[next]);
+      next += 1;
+    }
+    scripts.push({ line: index + 1, text: body.join('\n') });
+    index = next - 1;
+  }
+  return scripts;
+}
+
+// A title, a branch name, a comment, a login: text someone outside the
+// workflow chose. Pasted into a script by `${{ }}` it is code run with this
+// job's secrets, so it reaches a script through `env:` and nowhere else.
+const EVENT_TEXT = /github\.event\.|github\.(ref_name|head_ref|base_ref|actor|triggering_actor)\b|steps\.(comment-pr|command)\.outputs\./;
+
+test('action.yml: the scripts were found', () => {
+  assert.ok(runScripts().length > 30, `only ${String(runScripts().length)} run scripts found — the shape changed`);
+});
+
+test('action.yml: no run script interpolates event-controlled text', () => {
+  const offending = [];
+  for (const script of runScripts()) {
+    for (const expression of script.text.matchAll(/\$\{\{([\s\S]*?)\}\}/g)) {
+      if (EVENT_TEXT.test(expression[1])) {
+        offending.push(`run: at line ${String(script.line)}: \${{${expression[1]}}}`);
+      }
+    }
+  }
+  assert.deepEqual(offending, []);
+});

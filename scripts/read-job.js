@@ -130,6 +130,9 @@ function writeOutputs(summary) {
     ['job_id', summary.jobId],
     ['job_url', summary.jobUrl],
     ['failure_code', summary.failureCode],
+    // One line: the report shows it inside a one-line banner, and a newline in a
+    // `key=value` output would end the value and start another key.
+    ['failure_message', String(summary.failureMessage || '').replace(/\s*[\r\n]+\s*/g, ' ').trim()],
     // Never empty: its readers fall back from the re-verified job to the first
     // one with `||`, and an empty value would read the wrong job's answer.
     ['platform_publishes', summary.platformPublishes ? 'true' : 'false'],

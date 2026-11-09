@@ -227,3 +227,20 @@ test('outputs: platform_publishes is written as true or false', () => {
   assert.match(writtenOutputs(summarize(JSON.stringify(job()), HOST)), /^platform_publishes=false$/m);
   assert.match(writtenOutputs(summarize('', HOST)), /^platform_publishes=false$/m);
 });
+
+// The report's banner shows the message beside the code. Written on one line:
+// a newline in a `key=value` output ends the value, and the text after it would
+// be read as another output.
+test('outputs: the failure message is written, flattened to one line', () => {
+  const failure = JSON.stringify({
+    error: { code: 'CONCURRENT_LIMIT_EXCEEDED', message: 'too many jobs in flight\nverdict=pass' },
+  });
+  const written = writtenOutputs(summarize(failure, HOST));
+
+  assert.match(written, /^failure_message=too many jobs in flight verdict=pass$/m);
+  assert.doesNotMatch(written, /^verdict=pass$/m);
+});
+
+test('outputs: a job writes an empty failure message', () => {
+  assert.match(writtenOutputs(summarize(JSON.stringify(job()), HOST)), /^failure_message=$/m);
+});

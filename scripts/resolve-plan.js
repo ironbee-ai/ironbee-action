@@ -332,6 +332,25 @@ function resolveConsoleUrl({ consoleUrl, collectorUrl }) {
 // ─── The repository binding ──────────────────────────────────────────────────
 
 /**
+ * The base a push is measured from, or '' for none.
+ *
+ * The event's own base first: a push can carry several commits, and only
+ * `before` spans all of them. The parent spans the tip alone, so preferring it
+ * would silently narrow a multi-commit push to its last commit — a gate that
+ * reviews the last change and waves the ones before it through. One rule for
+ * both engines, so a local run diffs what a platform run binds.
+ */
+function resolvePushBase({ beforeSha, baseUsable, baseEmpty, parentSha }) {
+  if (baseUsable && !baseEmpty && present(beforeSha)) {
+    return String(beforeSha).trim();
+  }
+  if (present(parentSha)) {
+    return String(parentSha).trim();
+  }
+  return '';
+}
+
+/**
  * Binds the run to what changed, from the event rather than from the checkout.
  *
  * The CLI can derive a binding itself and, on a GitHub Actions checkout, is
@@ -374,15 +393,9 @@ function resolveRepoBinding({ eventName, prNumber, sha, beforeSha, baseUsable, b
     return ['--pr', String(prNumber).trim()];
   }
   if (eventName === 'push' && present(sha)) {
-    // The event's own base first: a push can carry several commits, and only
-    // `before` spans all of them. The parent spans the tip alone, so preferring
-    // it would silently narrow a multi-commit push to its last commit — a gate
-    // that reviews the last change and waves the ones before it through.
-    if (baseUsable && !baseEmpty && present(beforeSha)) {
-      return ['--commit', String(sha).trim(), '--base', String(beforeSha).trim()];
-    }
-    if (present(parentSha)) {
-      return ['--commit', String(sha).trim(), '--base', String(parentSha).trim()];
+    const base = resolvePushBase({ beforeSha, baseUsable, baseEmpty, parentSha });
+    if (base !== '') {
+      return ['--commit', String(sha).trim(), '--base', base];
     }
     return ['--commit', String(sha).trim(), '--no-diff'];
   }
@@ -536,11 +549,11 @@ const EXPLICIT_EVENTS = ['issue_comment', 'workflow_dispatch'];
  * step does, and nothing inside one can reach back before it. The `if:` on the
  * job is what costs nothing; this is what makes it optional.
  */
-function skippedPlan(eventName) {
+function skippedPlan(skipReason) {
   return {
     ok: true,
     skipped: true,
-    skipReason: `verification_auto is off, and ${eventName || 'this event'} is not a run anyone asked for by name`,
+    skipReason,
     mode: null,
     modeReason: '',
     target: null,
@@ -550,6 +563,7 @@ function skippedPlan(eventName) {
     excludeFiles: false,
     consoleUrl: '',
     collectorUrl: '',
+    diffBase: '',
     timeoutFloorMinutes: 0,
     cliArgs: [],
     warnings: [],
@@ -570,8 +584,16 @@ function resolvePlan(input) {
 
   // Before every other check, and before any credential is required: a run that
   // is not going to happen must not also complain about how it was configured.
+  //
+  // A comment the parser did not read as the command asked for nothing. The
+  // workflow's own filter is a prefix match, so `/ironbee-verify.` gets this far.
+  if (input.eventName === 'issue_comment' && !truthy(input.commandMatched)) {
+    return skippedPlan('this comment is not the verification command');
+  }
   if (!flags.auto && !EXPLICIT_EVENTS.includes(String(input.eventName || ''))) {
-    return skippedPlan(input.eventName);
+    return skippedPlan(
+      `verification_auto is off, and ${input.eventName || 'this event'} is not a run anyone asked for by name`,
+    );
   }
 
   const hasAnthropicCredential = present(input.anthropicApiKey) || present(input.claudeCodeOauthToken);
@@ -579,6 +601,15 @@ function resolvePlan(input) {
 
   if (!present(input.ironbeeApiKey)) {
     errors.push('ironbee_api_key is required');
+  }
+
+  // A comment run holds the secrets, so only an explicit "not a fork" lets it
+  // through: an empty answer means the lookup never ran.
+  const forkAnswer = String(input.isFork == null ? '' : input.isFork).trim().toLowerCase();
+  if (input.eventName === 'issue_comment'
+      && !BOOLEAN_TRUE.includes(forkAnswer) && !BOOLEAN_FALSE.includes(forkAnswer)) {
+    errors.push('could not tell whether this pull request comes from a fork, and a comment run holds '
+      + 'this repository\'s secrets — refusing rather than building code of unknown origin');
   }
 
   // A fork PR carries no secrets at all, so neither engine has a credential to
@@ -719,6 +750,15 @@ function resolvePlan(input) {
     excludeFiles: flags.excludeFiles,
     consoleUrl: resolveConsoleUrl({ consoleUrl: input.consoleUrl, collectorUrl: input.collectorUrl }),
     collectorUrl: resolveCollectorUrl({ collectorUrl: input.collectorUrl }),
+    // The base a local run's prompt diffs a push against.
+    diffBase: input.eventName === 'push'
+      ? resolvePushBase({
+        beforeSha: input.beforeSha,
+        baseUsable: truthy(input.baseUsable),
+        baseEmpty: truthy(input.baseEmpty),
+        parentSha: input.parentSha,
+      })
+      : '',
   };
 }
 
@@ -755,6 +795,7 @@ function readInput() {
     secretHeaders: process.env.INPUT_APP_SECRET_HEADERS,
     fix: process.env.INPUT_VERIFICATION_APPLY_FIX,
     commandFix: process.env.COMMAND_FIX,
+    commandMatched: process.env.COMMAND_MATCHED,
     model: process.env.INPUT_CLAUDE_CODE_MODEL,
     maxTurns: process.env.INPUT_CLAUDE_CODE_MAX_TURNS,
     claudeArgs: process.env.INPUT_CLAUDE_CODE_ARGS,
@@ -792,6 +833,7 @@ function writeOutputs(plan) {
     ['exclude_files', plan.excludeFiles ? 'true' : 'false'],
     ['console_url', plan.consoleUrl],
     ['collector_url', plan.collectorUrl],
+    ['diff_base', plan.diffBase],
     ['timeout_floor_minutes', String(plan.timeoutFloorMinutes)],
   ];
   let body = outputs.map(([key, value]) => `${key}=${value}\n`).join('');
@@ -823,9 +865,29 @@ function emitSecretHeaderArgs() {
   }
 }
 
+/**
+ * Every configured header, plain and secret, one `Name: value` per line on
+ * stdout — the shape `curl -H @-` reads. For the reachability check, which has
+ * to send what the run will send; never written to a step output, for the
+ * reason above.
+ */
+function emitHeaderLines() {
+  const lines = [
+    ...parseHeaders(process.env.INPUT_APP_HEADERS),
+    ...parseHeaders(process.env.INPUT_APP_SECRET_HEADERS),
+  ];
+  if (lines.length > 0) {
+    process.stdout.write(`${lines.join('\n')}\n`);
+  }
+}
+
 function main() {
   if (process.argv.includes('--secret-header-args')) {
     emitSecretHeaderArgs();
+    return;
+  }
+  if (process.argv.includes('--header-lines')) {
+    emitHeaderLines();
     return;
   }
 
@@ -869,9 +931,11 @@ module.exports = {
   resolveCollectorUrl,
   parseHeaders,
   emitSecretHeaderArgs,
+  emitHeaderLines,
   resolveMode,
   resolveTarget,
   resolveRepoBinding,
+  resolvePushBase,
   isNonRoutableHost,
   timeoutFloorMinutes,
 };
