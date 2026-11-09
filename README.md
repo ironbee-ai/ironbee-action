@@ -163,11 +163,15 @@ the command line is the prompt.
 The command must be the first non-quoted line of the comment, so a comment that
 merely discusses it, or a reply that quotes it, starts nothing.
 
-`--fix` is opt-in per comment and bounded by `verification_apply_fix`: a
-repository that switched fixing off cannot have it switched back on from a
-comment. Unknown options are answered with a usage reply rather than read as
-prose, and that run ends red — a composite action cannot stop halfway, so the
-alternative would be verifying something other than what was asked for.
+`--fix` is opt-in per comment and can never go beyond the workflow's own
+configuration. With fixing on (`verification_apply_fix`, and an Anthropic
+credential to fix with), `--fix` applies the fixes, and a comment without it
+verifies and reports only. With fixing off — `verification_apply_fix: false`, or
+no Anthropic credential — a comment with `--fix` runs a report-only verification,
+and the report says in one line that fixing is off in this workflow. Unknown
+options are answered with a usage reply rather than read as prose, and that run
+ends red — a composite action cannot stop halfway, so the alternative would be
+verifying something other than what was asked for.
 
 The comment gets an 👀 reaction when the run starts and 👍 / 👎 when it ends —
 an `issue_comment` run does not appear in the pull request's checks, so without
@@ -176,6 +180,10 @@ them there is nothing to tell "it started" from "nothing listened".
 **Fork pull requests are refused on this event**, and for the opposite reason to
 the usual one: a comment run holds the base repository's secrets, so building
 and starting a fork's code under it would hand them to whoever opened it.
+
+A comment on a plain issue, not a pull request, runs nothing even when the job's
+`if:` lets it through: the action neither reads the comment nor looks a pull
+request up, and the run ends skipped.
 
 ### Turning Automatic Verification Off
 
@@ -267,11 +275,16 @@ worth spending a line of configuration to avoid.
 
 A preview deployment behind SSO or a protection bypass answers 401 or 403 to the
 verification, and the run would report on the login page. The action refuses that
-case in preflight, by name.
+case in preflight, by name. The preflight request carries `app_headers` and
+`app_secret_headers` as the platform run does, so a protection they bypass passes
+it; local mode does not use them, so there a 401 or 403 is refused whatever they
+hold.
 
-An SSO redirect that answers **200** with a login page cannot be told apart from
-an application by a status code, so it is not caught — the verdict will describe
-the login page.
+The preflight follows no redirect — curl would repeat the headers to whatever
+host it names — so an SSO redirect is logged with its 3xx status and not refused,
+and a login page served with **200** cannot be told apart from an application by a
+status code either. Neither is caught, and the verdict will describe the login
+page.
 
 Two ways past it:
 
@@ -478,6 +491,26 @@ nobody validates is a setting that silently did not apply.
 - **Push / Manual / Scheduled** — fixes go to a new branch and a PR is opened
 
 The action performs the commit and the push itself. The agent only edits files.
+Only what a fix changed is committed. In platform mode the install and the build
+run before the fix, so their output is never part of it. In local mode the agent
+installs, builds and fixes in one run: a run with no fix cycle (a failing
+verdict, then another) commits nothing, and a fix commit may also carry what the
+agent's own install or build wrote. Files the running application writes in
+unignored paths while the fix runs count as changes too, as they always did. With
+`ironbee_exclude_files: false` the IronBee setup files are committed alongside a
+fix.
+
+### Verifying the same pull request again
+
+A new push, a re-run, another `/ironbee-verify` or the re-verification after a
+fix does not pile up reports. The action's report comment is edited in place
+(after a fix, to the re-verified run, with the run before it linked), and the
+pull request's checks show the newest `pull_request` run. When the platform
+publishes the run, it does the same with its own: its IronBee check shows the
+newest run, the earlier run's inline comments are replaced by the new run's, and
+its summary comment is edited in place. The earlier report stays with its own
+run — in that workflow run's step summary, and as its job in the IronBee
+Console.
 
 ### Re-verification after a fix
 

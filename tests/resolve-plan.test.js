@@ -28,7 +28,9 @@ function input(overrides) {
     verificationMode: 'auto',
     repositoryPrivate: 'false',
     isFork: 'false',
-    // Read on a comment run only: the parser matched the command.
+    // Read on a comment run only: the comment is on a pull request, and the
+    // parser matched the command.
+    commentOnPullRequest: 'true',
     commandMatched: 'true',
     eventName: 'pull_request',
     prNumber: '42',
@@ -672,6 +674,40 @@ test('plan: --fix cannot turn fixing on where the repository switched it off', (
 test('plan: a repository-permitted fix says nothing about a ceiling', () => {
   const plan = resolvePlan(comment({ fix: 'true', commandFix: 'true' }));
   assert.doesNotMatch(plan.warnings.join(' '), /switched off/);
+});
+
+// The report carries the refusal, whichever of the two switches made it: the
+// setting, or no credential to fix with.
+test('plan: a comment\'s --fix that the workflow does not apply is marked for the report', () => {
+  const off = resolvePlan(comment({ fix: 'false', commandFix: 'true' }));
+  assert.equal(off.canFix, false);
+  assert.equal(off.fixRefused, true);
+
+  const noCredential = resolvePlan(comment({
+    verificationMode: 'platform', fix: 'true', commandFix: 'true', anthropicApiKey: '',
+  }));
+  assert.equal(noCredential.ok, true);
+  assert.equal(noCredential.canFix, false);
+  assert.equal(noCredential.fixRefused, true);
+});
+
+test('plan: no refusal to report when the fix applies, or nobody asked for one', () => {
+  assert.equal(resolvePlan(comment({ fix: 'true', commandFix: 'true' })).fixRefused, false);
+  assert.equal(resolvePlan(comment({ fix: 'false', commandFix: '' })).fixRefused, false);
+  assert.equal(resolvePlan(input({ fix: 'false' })).fixRefused, false);
+});
+
+// `issue_comment` fires on plain issues too. There is no pull request to
+// verify, so nothing runs and no fork answer is asked for.
+test('plan: a comment on a plain issue runs nothing, whatever it says', () => {
+  for (const commentOnPullRequest of ['false', '']) {
+    const plan = resolvePlan(comment({ commentOnPullRequest, isFork: '', commandFix: 'true' }));
+
+    assert.equal(plan.skipped, true, commentOnPullRequest);
+    assert.equal(plan.mode, null, commentOnPullRequest);
+    assert.match(plan.skipReason, /on an issue, not a pull request/, commentOnPullRequest);
+    assert.deepEqual(plan.errors, [], commentOnPullRequest);
+  }
 });
 
 // A comment run holds the base repository's secrets, so this is the one refusal

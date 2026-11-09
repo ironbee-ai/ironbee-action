@@ -225,3 +225,132 @@ test('an earlier link identical to the current one is not repeated', () => {
 
   assert.equal(report.includes('the verification before the fix'), false);
 });
+
+// ─── A comment's --fix this workflow does not apply ──────────────────────────
+
+const REPORT_SCRIPT = require('node:path').join(__dirname, '..', 'scripts', 'build-report.js');
+
+function runReport(args) {
+  return require('node:child_process').execFileSync('node', [REPORT_SCRIPT, ...args], { encoding: 'utf8' });
+}
+
+test('fix off: the platform report says so under the badge, once', () => {
+  const report = buildPlatformReport(job({ result: { status: 'fail', issues: ['the total ignores it'] } }), {
+    ...OPTIONS,
+    fixOff: true,
+  });
+
+  const lines = report.split('\n');
+  const note = lines.findIndex((line) => line.includes('fixing is off in this workflow'));
+  assert.notEqual(note, -1);
+  assert.ok(note > lines.findIndex((line) => line.includes('**FAIL**')));
+  assert.equal(report.split('fixing is off in this workflow').length, 2);
+});
+
+test('fix off: a report without it says nothing of the kind', () => {
+  const report = buildPlatformReport(job({ result: { status: 'pass', checks: ['ok'] } }), OPTIONS);
+  assert.equal(report.includes('fixing is off'), false);
+});
+
+// The local shape takes positional arguments; the flag is not read as one of them.
+test('fix off: the local report takes the flag after its positional arguments', () => {
+  const dir = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'report-'));
+  const report = runReport([dir, '1.2.3', '', 'console.ironbee.dev', 'sess-1', '--fix-off']);
+
+  assert.match(report, /fixing is off in this workflow/);
+  assert.match(report, /v1\.2\.3\*/);
+  assert.match(report, /https:\/\/console\.ironbee\.dev\/sessions\/sess-1/);
+  assert.equal(runReport([dir, '1.2.3']).includes('fixing is off'), false);
+});
+
+test('fix off: the platform command line reads the flag wherever it sits', () => {
+  const report = runReport(['--job', '/nonexistent/job.json', '--fix-off', '--version', '1.2.3']);
+  assert.match(report, /fixing is off in this workflow/);
+  assert.match(report, /No verification ran/);
+});
+
+// ─── The fix cycle a local run's commit needs ────────────────────────────────
+
+const { parseVerdicts, hadFixCycle, FIX_OFF_NOTE } = require('../scripts/build-report.js');
+
+/**
+ * A `.ironbee` with one session whose verdicts are `statuses`, in order, in the
+ * main agent's file as the CLI writes them (`agents/main/actions.jsonl`), or in
+ * the session-level file an older CLI wrote when `layout` is `legacy`. A status
+ * may be `{ status, kind, agent, timestamp }`.
+ */
+function sessions(statuses, layout) {
+  const fsx = require('node:fs');
+  const pathx = require('node:path');
+  const dir = fsx.mkdtempSync(pathx.join(require('node:os').tmpdir(), 'cycles-'));
+  const files = new Map();
+  statuses.forEach((entry, index) => {
+    const spec = typeof entry === 'string' ? { status: entry } : entry;
+    const file = layout === 'legacy'
+      ? pathx.join(dir, 'sessions', 's1', 'actions.jsonl')
+      : pathx.join(dir, 'sessions', 's1', 'agents', spec.agent || 'main', 'actions.jsonl');
+    const event = { type: 'verdict_write', timestamp: spec.timestamp || 1000 + index, verdict: { status: spec.status } };
+    if (spec.kind) {
+      event.kind = spec.kind;
+    }
+    files.set(file, [...(files.get(file) || ['{"type":"tool_call","timestamp":1}']), JSON.stringify(event)]);
+  });
+  fsx.mkdirSync(pathx.join(dir, 'sessions', 's1', 'agents', 'main'), { recursive: true });
+  for (const [file, lines] of files) {
+    fsx.mkdirSync(pathx.dirname(file), { recursive: true });
+    fsx.writeFileSync(file, `${lines.join('\n')}\n`);
+  }
+  return dir;
+}
+
+test('fix cycle: a failing verdict before the last one is one', () => {
+  assert.equal(hadFixCycle(parseVerdicts(sessions(['fail', 'pass']))), true);
+  assert.equal(hadFixCycle(parseVerdicts(sessions(['fail', 'fail', 'pass']))), true);
+});
+
+// A first cycle that passes fixed nothing; a lone fail never verified a fix.
+// The session-level file an older CLI wrote is read too.
+test('fix cycle: the legacy session-level file is read as well', () => {
+  assert.equal(hadFixCycle(parseVerdicts(sessions(['fail', 'pass'], 'legacy'))), true);
+  assert.equal(hadFixCycle(parseVerdicts(sessions(['pass'], 'legacy'))), false);
+});
+
+// A scenario run's verdict is for visibility: its fail is no failure a fix answered.
+test('fix cycle: a scenario run\'s fail is not one', () => {
+  assert.equal(hadFixCycle(parseVerdicts(sessions([{ status: 'fail', kind: 'scenario' }, 'pass']))), false);
+  assert.equal(parseVerdicts(sessions([{ status: 'fail', kind: 'scenario' }, 'pass'])).length, 1);
+});
+
+// Each agent writes its own file; the verdicts are read in time order across them.
+test('fix cycle: the agents\' files are merged by timestamp', () => {
+  const failThenPass = sessions([{ status: 'pass', agent: 'main', timestamp: 2000 }, { status: 'fail', agent: 'verifier', timestamp: 1000 }]);
+  assert.deepEqual(parseVerdicts(failThenPass).map((cycle) => cycle.verdict.status), ['fail', 'pass']);
+  assert.equal(hadFixCycle(parseVerdicts(failThenPass)), true);
+
+  const passThenFail = sessions([{ status: 'fail', agent: 'main', timestamp: 2000 }, { status: 'pass', agent: 'verifier', timestamp: 1000 }]);
+  assert.equal(hadFixCycle(parseVerdicts(passThenFail)), false);
+});
+
+test('fix cycle: a pass alone, a fail alone or no verdict is none', () => {
+  assert.equal(hadFixCycle(parseVerdicts(sessions(['pass']))), false);
+  assert.equal(hadFixCycle(parseVerdicts(sessions(['pass', 'pass']))), false);
+  assert.equal(hadFixCycle(parseVerdicts(sessions(['fail']))), false);
+  assert.equal(hadFixCycle(parseVerdicts(sessions([]))), false);
+});
+
+test('last verdict: the command line names the last verdict and its session', () => {
+  const script = require('node:path').join(__dirname, '..', 'scripts', 'build-report.js');
+  const last = (dir) => require('node:child_process').execFileSync('node', [script, '--last-verdict', dir], { encoding: 'utf8' }).trim();
+  assert.equal(last(sessions(['fail', 'pass', { status: 'fail', kind: 'scenario' }])), 'pass|s1');
+  assert.equal(last('/nonexistent'), '');
+});
+
+test('fix cycle: the command line answers true or false', () => {
+  assert.equal(runReport(['--fix-cycle', sessions(['fail', 'pass'])]).trim(), 'true');
+  assert.equal(runReport(['--fix-cycle', sessions(['pass'])]).trim(), 'false');
+  assert.equal(runReport(['--fix-cycle', '/nonexistent']).trim(), 'false');
+});
+
+test('fix off: the note alone is the line the report carries', () => {
+  assert.equal(runReport(['--fix-off-note']).trim(), FIX_OFF_NOTE);
+});

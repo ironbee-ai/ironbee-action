@@ -3,7 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+const { execFileSync } = require('node:child_process');
 
 // The seams between `action.yml` and `scripts/resolve-plan.js`, which no unit
 // test can see. Each one has already broken once: a rename left `inputs.model`
@@ -270,12 +272,32 @@ function header(name) {
 // The fork answer is what keeps a fork's code off a run holding the secrets, so
 // it may not hinge on how the parser read the comment: `/ironbee-verify.`
 // passes a prefix filter, parses as no command, and used to skip the lookup.
-test('action.yml: the fork lookup runs on every comment, whatever the parser said', () => {
+test('action.yml: the fork lookup runs on every pull request comment, whatever the parser said', () => {
   const condition = header('Resolve the pull request behind the comment');
 
-  assert.match(condition, /if: github\.event_name == 'issue_comment'\n/);
+  assert.match(condition, /if: github\.event_name == 'issue_comment' && github\.event\.issue\.pull_request\n/);
   assert.doesNotMatch(condition, /steps\.command\.outputs/);
   assert.match(header('Resolve the verification plan'), /COMMAND_MATCHED: \$\{\{ steps\.command\.outputs\.matched \}\}/);
+});
+
+// A plain issue has no pull request: the comment is neither read nor looked up,
+// and the plan is told so, which skips the run.
+test('action.yml: a comment on a plain issue is not read and not looked up', () => {
+  for (const name of ['Read the comment command', 'Resolve the pull request behind the comment']) {
+    assert.match(header(name), /&& github\.event\.issue\.pull_request\n/, name);
+  }
+  assert.match(
+    header('Resolve the verification plan'),
+    /COMMENT_ON_PULL_REQUEST: \$\{\{ github\.event\.issue\.pull_request && 'true' \|\| 'false' \}\}/,
+  );
+});
+
+// A comment's --fix the workflow does not apply is said in the report, in both
+// shapes, from the plan's own answer.
+test('action.yml: the report says when a comment\'s fix is not applied', () => {
+  const body = step('Build the verification report');
+  const flags = body.match(/\$\{\{ steps\.plan\.outputs\.fix_refused == 'true' && '--fix-off' \|\| '' \}\}/g) || [];
+  assert.equal(flags.length, 2);
 });
 
 // Fixing off — the setting, or a comment without --fix — has to hold in local
@@ -337,9 +359,328 @@ test('action.yml: the reachability check sends the run\'s headers, never as argu
 
   assert.match(body, /resolve-plan\.js" --header-lines/);
   assert.match(body, /CURL_ARGS\+=\(-H @-\)/);
-  // A redirect would carry the headers to another host.
-  const withHeaders = body.slice(body.indexOf('if [ -n "$HEADER_LINES" ]'), body.indexOf('else', body.indexOf('if [ -n "$HEADER_LINES" ]')));
-  assert.doesNotMatch(withHeaders, /-L/);
+  // A redirect would carry the headers to another host, so none is followed.
+  assert.doesNotMatch(body, /-L\b|--location/);
+});
+
+// The start command's children would otherwise outlive the restart, keep the
+// port, and serve the pre-fix code to the re-verification.
+test('action.yml: the application started by command leads its own process group, stopped whole', () => {
+  const start = step('Start the application');
+  assert.match(start, /set -m\n\s+nohup bash -c "\$APP_START_COMMAND" < \/dev\/null > \.ironbee\/artifacts\/app\.log 2>&1 &\n\s+echo \$! > \.ironbee\/app\.pid\n\s+set \+m/);
+
+  const restart = step('Re-verify after the fix');
+  assert.match(restart, /set -m\n\s+nohup bash -c "\$APP_START_COMMAND" < \/dev\/null >> \.ironbee\/artifacts\/app\.log 2>&1 &/);
+
+  const groupKill = 'kill -- "-$(cat .ironbee/app.pid)" 2>/dev/null || kill "$(cat .ironbee/app.pid)" 2>/dev/null || true';
+  for (const name of ['Re-verify after the fix', 'Stop the application']) {
+    assert.ok(step(name).includes(groupKill), name);
+    // No kill of the process alone, other than as the fallback above.
+    assert.doesNotMatch(step(name), /^\s+kill "\$\(cat \.ironbee\/app\.pid\)"/m, name);
+  }
+});
+
+// What an install or a build left in the tree is not a fix: neither path stages
+// anything unless a fix step changed files, and then only the paths it touched.
+test('action.yml: neither outcome path stages anything but what the fix touched', () => {
+  for (const name of ['Commit the fixes to the pull request branch', 'Create fix PR']) {
+    assert.match(
+      header(name),
+      /\(steps\.platform-fix\.outputs\.fixed == 'true' \|\| steps\.claude-verify\.outputs\.fixed == 'true'\)/,
+      name,
+    );
+    const body = step(name);
+    // `git add` only ever names a path: the IronBee setup's, when it is kept.
+    assert.doesNotMatch(body, /git add(?! -A -- "\$SETUP_PATH")/, name);
+    assert.match(body, /git reset -q \|\| true\n\s+node "\$\{\{ github\.action_path \}\}\/scripts\/fix-paths\.js" stage \.ironbee\/fix-paths/, name);
+    // The exclusions still apply on top.
+    assert.match(body, /git reset HEAD -- \.ironbee\//, name);
+    assert.match(body, /git reset HEAD -- \.mcp\.json \.gitignore \.claude\//, name);
+  }
+});
+
+// ─── Step scripts, run ───────────────────────────────────────────────────────
+
+/**
+ * A piece of a step's script, from `from` up to `to` (or the end), with its
+ * expressions replaced by `values`, run by bash as GitHub runs it.
+ */
+function runPiece(name, from, to, values, cwd, env) {
+  const body = step(name);
+  const script = body.slice(body.indexOf('run: |'));
+  const start = script.indexOf(from);
+  assert.notEqual(start, -1, `${from} not in ${name}`);
+  const end = to ? script.indexOf(to, start) : script.length;
+  assert.notEqual(end, -1, `${to} not in ${name}`);
+  const text = script.slice(start, end).replace(/\$\{\{ ([^}]+?) \}\}/g, (match, expression) => {
+    assert.ok(expression in values, `no value for ${expression}`);
+    return values[expression];
+  });
+  return execFileSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', text], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, ...env },
+  });
+}
+
+/**
+ * A checkout as the local agent leaves it: a stray `stray.log` and the IronBee
+ * setup written before the snapshot, then the agent's own install rewriting the
+ * lockfile and its build writing an unignored file, and the session's verdicts
+ * as `statuses` in the main agent's file, as the CLI writes them. With `edit`,
+ * the agent also fixed `app.js`; with `ignoreSetup`, the repository ignores
+ * `.mcp.json`.
+ */
+function localRun(statuses, edit, ignoreSetup) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'action-step-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' });
+  git('init', '-q');
+  fs.writeFileSync(path.join(dir, '.gitignore'), ignoreSetup ? 'node_modules/\n.mcp.json\n' : 'node_modules/\n');
+  fs.writeFileSync(path.join(dir, 'app.js'), 'broken\n');
+  fs.writeFileSync(path.join(dir, 'package-lock.json'), '{}\n');
+  git('add', '.');
+  git('-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '-q', '-m', 'init');
+
+  fs.mkdirSync(path.join(dir, '.ironbee', 'sessions', 's1', 'agents', 'main'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'stray.log'), 'left by something before the run\n');
+  fs.writeFileSync(path.join(dir, '.mcp.json'), '{}\n');
+  fs.mkdirSync(path.join(dir, '.claude'));
+  fs.writeFileSync(path.join(dir, '.claude', 'settings.json'), '{}\n');
+  fs.appendFileSync(path.join(dir, '.gitignore'), '.ironbee/\n');
+  execFileSync('node', [path.join(ROOT, 'scripts', 'fix-paths.js'), 'snapshot', '.ironbee/pre-fix-tree'], { cwd: dir });
+
+  fs.writeFileSync(path.join(dir, 'package-lock.json'), '{"lockfileVersion":3}\n');
+  fs.writeFileSync(path.join(dir, 'next-env.d.ts'), '// generated\n');
+  if (edit) {
+    fs.writeFileSync(path.join(dir, 'app.js'), 'fixed\n');
+  }
+  fs.writeFileSync(
+    path.join(dir, '.ironbee', 'sessions', 's1', 'agents', 'main', 'actions.jsonl'),
+    statuses.map((status, index) => JSON.stringify({ type: 'verdict_write', timestamp: 1000 + index, verdict: { status } })).join('\n'),
+  );
+
+  const output = path.join(dir, '.ironbee', 'github-output');
+  fs.writeFileSync(output, '');
+  runPiece(
+    'Run Claude Code verification',
+    'node "${{ github.action_path }}/scripts/fix-paths.js" changed',
+    null,
+    { 'github.action_path': ROOT },
+    dir,
+    { GITHUB_OUTPUT: output },
+  );
+  return { dir, outputs: fs.readFileSync(output, 'utf8') };
+}
+
+/** Where each outcome step stops staging and starts committing. */
+const COMMIT_CHECK = {
+  'Commit the fixes to the pull request branch': 'if [ -z "$(git diff --cached --name-only)" ]',
+  'Create fix PR': 'if [ -n "$(git diff --cached --name-only)" ]',
+};
+
+function stagedAfterCommitStep(name, dir, excludeFiles) {
+  runPiece(
+    name,
+    'git reset -q || true',
+    COMMIT_CHECK[name],
+    { 'github.action_path': ROOT, 'steps.plan.outputs.exclude_files': excludeFiles },
+    dir,
+    {},
+  );
+  return execFileSync('git', ['diff', '--cached', '--name-only'], { cwd: dir, encoding: 'utf8' }).trim().split('\n').filter(Boolean).sort();
+}
+
+// The agent's own install and build wrote into the tree, and its first cycle
+// passed: nothing was fixed, so nothing is staged.
+test('local run: a first cycle that passes over a dirty tree is no fix', () => {
+  const { outputs } = localRun(['pass'], false);
+  assert.match(outputs, /^fixed=false$/m);
+});
+
+// Even an edit is no fix without a failing cycle before it.
+test('local run: changed files without a failing cycle are no fix', () => {
+  assert.match(localRun(['pass'], true).outputs, /^fixed=false$/m);
+});
+
+// A fix that also carries what the agent's install and build wrote is accepted.
+test('local run: a fail then a pass with changed files is a fix, carrying the install\'s output', () => {
+  const { dir, outputs } = localRun(['fail', 'pass'], true);
+  assert.match(outputs, /^fixed=true$/m);
+  for (const name of ['Commit the fixes to the pull request branch', 'Create fix PR']) {
+    // Lying there before the run and staged by the agent itself: the step's
+    // own reset drops it.
+    execFileSync('git', ['add', 'stray.log'], { cwd: dir });
+    assert.deepEqual(stagedAfterCommitStep(name, dir, 'true'), ['app.js', 'next-env.d.ts', 'package-lock.json'], name);
+  }
+});
+
+// A setup path the repository ignores is skipped, as a whole-tree add skipped
+// it, and the fix is still committed.
+test('local run: with exclude_files off an ignored setup path does not cost the fix', () => {
+  const { dir } = localRun(['fail', 'pass'], true, true);
+  for (const name of ['Commit the fixes to the pull request branch', 'Create fix PR']) {
+    assert.deepEqual(
+      stagedAfterCommitStep(name, dir, 'false'),
+      ['.claude/settings.json', '.gitignore', 'app.js', 'next-env.d.ts', 'package-lock.json'],
+      name,
+    );
+  }
+});
+
+// ironbee_exclude_files off commits the IronBee setup with the fix, though it
+// was written before the snapshot.
+test('local run: with exclude_files off the IronBee setup is staged with the fix', () => {
+  const { dir } = localRun(['fail', 'pass'], true);
+  for (const name of ['Commit the fixes to the pull request branch', 'Create fix PR']) {
+    assert.deepEqual(
+      stagedAfterCommitStep(name, dir, 'false'),
+      ['.claude/settings.json', '.gitignore', '.mcp.json', 'app.js', 'next-env.d.ts', 'package-lock.json'],
+      name,
+    );
+  }
+});
+
+test('action.yml: the setup paths are staged only when exclude_files is off, after the fix\'s', () => {
+  for (const name of ['Commit the fixes to the pull request branch', 'Create fix PR']) {
+    const body = step(name);
+    const stage = body.indexOf('fix-paths.js" stage .ironbee/fix-paths');
+    const setup = body.indexOf('if [ "${{ steps.plan.outputs.exclude_files }}" != "true" ]; then\n');
+    assert.ok(stage !== -1 && setup > stage, name);
+    assert.match(body.slice(setup), /for SETUP_PATH in \.mcp\.json \.gitignore \.claude; do/, name);
+  }
+});
+
+// The platform's own publication says nothing of fixing: the refusal is posted
+// on its own, with the token and the mechanism the malformed-command reply uses.
+test('action.yml: a refused --fix is answered on the pull request when the platform publishes', () => {
+  const body = step('Post the report on the pull request');
+  assert.match(header('Post the report on the pull request'), /FIX_REFUSED: \$\{\{ steps\.plan\.outputs\.fix_refused \}\}/);
+  const publishes = body.indexOf('if [ "$PLATFORM_PUBLISHES" = "true" ]; then');
+  const refused = body.indexOf('if [ "$FIX_REFUSED" = "true" ]; then', publishes);
+  const exit = body.indexOf('exit 0', publishes);
+  assert.ok(publishes !== -1 && refused > publishes && refused < exit);
+  const answer = body.slice(refused, exit);
+  assert.match(answer, /build-report\.js" --fix-off-note > \.ironbee-fix-off\.txt/);
+  assert.match(answer, /gh api "repos\/\$\{\{ github\.repository \}\}\/issues\/\$\{PR_NUMBER\}\/comments" \\\n\s+-F "body=@\.ironbee-fix-off\.txt"/);
+  assert.match(header('Answer a malformed command'), /GH_TOKEN: \$\{\{ inputs\.github_token \}\}/);
+  assert.match(header('Post the report on the pull request'), /GH_TOKEN: \$\{\{ inputs\.github_token \}\}/);
+});
+
+// Each fix step measures its own changes from a snapshot taken before it.
+test('action.yml: both fix steps snapshot the tree before the fix and list what changed after it', () => {
+  for (const name of ['Run Claude Code verification', 'Fix the reported issues']) {
+    const body = step(name);
+    const snapshot = body.indexOf('fix-paths.js" snapshot .ironbee/pre-fix-tree');
+    const agent = body.indexOf('| claude --output-format');
+    const changed = body.indexOf('fix-paths.js" changed .ironbee/pre-fix-tree .ironbee/fix-paths');
+    assert.ok(snapshot !== -1 && agent !== -1 && changed !== -1, name);
+    assert.ok(snapshot < agent && agent < changed, name);
+    assert.match(body, /if \[ -s \.ironbee\/fix-paths \](?: && \[ "\$FIX_CYCLE" = "true" \])?; then\n/, name);
+    assert.match(body, /echo "fixed=true" >> "\$GITHUB_OUTPUT"/, name);
+    // Neither call may fail the step; a broken one leaves a list of nothing.
+    assert.match(body, /fix-paths\.js" snapshot \.ironbee\/pre-fix-tree \|\| \{\n\s+echo "::warning::[^\n]+"\n\s+: > \.ironbee\/pre-fix-tree\n\s+\}/, name);
+    assert.match(body, /fix-paths\.js" changed \.ironbee\/pre-fix-tree \.ironbee\/fix-paths \|\| \{\n\s+echo "::warning::[^\n]+"\n\s+: > \.ironbee\/fix-paths\n\s+\}/, name);
+  }
+  assert.doesNotMatch(step('Fix the reported issues'), /git status --porcelain/);
+  // In local mode the changed list alone is not a fix: a fix cycle is too, and
+  // reading it cannot fail the step.
+  assert.match(step('Run Claude Code verification'), /FIX_CYCLE="\$\(node "\$\{\{ github\.action_path \}\}\/scripts\/build-report\.js" --fix-cycle \.ironbee \|\| echo false\)"/);
+});
+
+// The CLI keeps sessions outside the project by default, where nothing here
+// reads them: every local step that runs it keeps them in .ironbee/.
+test('action.yml: the local steps that run the CLI keep its sessions in the working directory', () => {
+  for (const name of ['Setup IronBee for Claude', 'Run Claude Code verification']) {
+    assert.match(header(name), /\n\s+IRONBEE_RUNTIME_LOCATION: in-project\n/, name);
+  }
+});
+
+/** A `.ironbee/sessions/s1` as the CLI leaves it: the verdict and the actions in the main agent's directory. */
+function sessionTree(status) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'session-'));
+  const agent = path.join(dir, '.ironbee', 'sessions', 's1', 'agents', 'main');
+  fs.mkdirSync(agent, { recursive: true });
+  fs.mkdirSync(path.join(dir, '.ironbee', 'artifacts'));
+  if (status) {
+    fs.writeFileSync(path.join(agent, 'verdict.json'), JSON.stringify({ status }));
+  }
+  fs.writeFileSync(path.join(agent, 'actions.jsonl'), [
+    JSON.stringify({ type: 'verdict_write', timestamp: 1, session_id: 's1', verdict: { status: 'fail' } }),
+    JSON.stringify({ type: 'verdict_write', timestamp: 2, session_id: 's1', verdict: { status: 'pass' } }),
+    JSON.stringify({ type: 'verdict_write', timestamp: 3, session_id: 's1', kind: 'scenario', verdict: { status: 'fail' } }),
+  ].join('\n'));
+  return dir;
+}
+
+function extractVerdict(dir) {
+  const output = path.join(dir, 'github-output');
+  fs.writeFileSync(output, '');
+  runPiece('Extract verdict', 'STATUS="unknown"', null,
+    { 'steps.plan.outputs.verbose': 'false', 'github.action_path': ROOT }, dir, { GITHUB_OUTPUT: output });
+  return fs.readFileSync(output, 'utf8');
+}
+
+// The session is the directory under sessions/, not the agent's below it.
+test('local run: the verdict is read from the agent\'s directory, the session from the one above it', () => {
+  assert.match(extractVerdict(sessionTree('pass')), /^status=pass\nsession_id=s1\n$/);
+});
+
+// Without a verdict file, the last gated verdict in the agents' actions counts;
+// a scenario run's does not.
+test('local run: without a verdict file the agents\' actions give the verdict', () => {
+  assert.match(extractVerdict(sessionTree(null)), /^status=pass\nsession_id=s1\n$/);
+});
+
+test('local run: the evidence carries the whole session, its agents included', () => {
+  const dir = sessionTree('pass');
+  runPiece('Collect session artifacts', 'ARTIFACTS_DIR=".ironbee/artifacts"', null,
+    { 'steps.plan.outputs.verbose': 'false' }, dir, { GITHUB_OUTPUT: path.join(dir, 'github-output') });
+  for (const file of ['verdict.json', 'actions.jsonl']) {
+    assert.ok(fs.existsSync(path.join(dir, '.ironbee', 'artifacts', 'sessions', 's1', 'agents', 'main', file)), file);
+  }
+});
+
+// The note is a courtesy: a refused post warns, and leaves no note file behind
+// for a re-run to find.
+test('action.yml: a refused --fix note that cannot be posted warns and leaves nothing behind', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'post-'));
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'gh-stub-'));
+  fs.writeFileSync(path.join(bin, 'gh'), '#!/usr/bin/env bash\nexit 1\n', { mode: 0o755 });
+  const printed = runPiece('Post the report on the pull request', 'if [ "$PLATFORM_PUBLISHES" = "true" ]; then', '# Updated in place',
+    { 'github.action_path': ROOT, 'github.repository': 'ironbee-ai/shop' }, dir,
+    { PATH: `${bin}${path.delimiter}${process.env.PATH}`, PLATFORM_PUBLISHES: 'true', FIX_REFUSED: 'true', PR_NUMBER: '7' });
+  assert.match(printed, /^::warning::could not post on the pull request that fixing is off in this workflow/m);
+  assert.equal(fs.existsSync(path.join(dir, '.ironbee-fix-off.txt')), false);
+});
+
+// A redirect is not followed, so its target is named: a sign-in redirect to an
+// identity provider, or http to https, is then visible in the log.
+test('reachability: a redirect is named, not followed', () => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'curl-stub-'));
+  const args = path.join(bin, 'args');
+  fs.writeFileSync(path.join(bin, 'curl'), [
+    '#!/usr/bin/env bash',
+    `printf '%s\\n' "$*" > "${args}"`,
+    'cat >/dev/null',
+    'printf "%s %s" "$STUB_STATUS" "$STUB_REDIRECT"',
+  ].join('\n'), { mode: 0o755 });
+  const check = (status, redirect) => runPiece(
+    'Check the deployment is reachable',
+    'HEADER_LINES=""',
+    null,
+    { 'steps.plan.outputs.mode': 'local', 'github.action_path': ROOT },
+    bin,
+    { PATH: `${bin}${path.delimiter}${process.env.PATH}`, APP_URL: 'https://preview.example.com', STUB_STATUS: status, STUB_REDIRECT: redirect },
+  );
+
+  const redirected = check('302', 'https://idp.example.com/login');
+  assert.match(redirected, /^::warning::https:\/\/preview\.example\.com answers 302, redirecting to https:\/\/idp\.example\.com\/login\./m);
+  assert.doesNotMatch(fs.readFileSync(args, 'utf8'), /(^| )(-L|--location)( |$)/);
+  assert.match(fs.readFileSync(args, 'utf8'), /%\{http_code\} %\{redirect_url\}/);
+
+  const plain = check('200', '');
+  assert.match(plain, /^https:\/\/preview\.example\.com answers 200$/m);
+  assert.doesNotMatch(plain, /::warning::/);
 });
 
 // The service's text reaches the shell as a value, never as script.
@@ -411,4 +752,48 @@ test('action.yml: no run script interpolates event-controlled text', () => {
     }
   }
   assert.deepEqual(offending, []);
+});
+
+// ─── The history fetch ───────────────────────────────────────────────────────
+
+/**
+ * A pull request's checkout, one commit deep as `actions/checkout` leaves it:
+ * `feature` left `main` two commits ago, and `main` has since moved 60 on.
+ */
+function checkoutFarBehindMain(cloneArgs = ['--no-single-branch']) {
+  const upstream = fs.mkdtempSync(path.join(os.tmpdir(), 'upstream-'));
+  const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { cwd, encoding: 'utf8' }).trim();
+  git(upstream, 'init', '-q', '-b', 'main');
+  git(upstream, 'commit', '-q', '--allow-empty', '-m', 'fork point');
+  const forkPoint = git(upstream, 'rev-parse', 'HEAD');
+  git(upstream, 'checkout', '-q', '-b', 'feature');
+  git(upstream, 'commit', '-q', '--allow-empty', '-m', 'feature 1');
+  git(upstream, 'commit', '-q', '--allow-empty', '-m', 'feature 2');
+  git(upstream, 'checkout', '-q', 'main');
+  execFileSync('bash', ['-c', 'for i in $(seq 60); do git -c user.name=t -c user.email=t@t commit -q --allow-empty -m "main $i"; done'], { cwd: upstream });
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'checkout-')), 'repo');
+  execFileSync('git', ['clone', '-q', '--depth', '1', ...cloneArgs, '--branch', 'feature', `file://${upstream}`, dir]);
+  return { dir, forkPoint };
+}
+
+// A depth of 50 after the unshallow made the checkout shallow again, and a main
+// that moved further than that hid the merge base the diff is measured from.
+test('fetch: a base branch far ahead of the fork still has its merge base', () => {
+  const { dir, forkPoint } = checkoutFarBehindMain();
+  runPiece('Fetch git history for diff', 'git fetch --unshallow origin', null, {}, dir, { BASE_REF: 'main' });
+
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  assert.equal(git('rev-parse', '--is-shallow-repository'), 'false');
+  assert.equal(git('merge-base', 'HEAD', 'origin/main'), forkPoint);
+});
+
+// A single-branch checkout's refspec covers its own branch alone, so a fetch
+// that named no destination left origin/<base> missing.
+test('fetch: a single-branch checkout ends with origin/<base>', () => {
+  const { dir, forkPoint } = checkoutFarBehindMain(['--single-branch']);
+  runPiece('Fetch git history for diff', 'git fetch --unshallow origin', null, {}, dir, { BASE_REF: 'main' });
+
+  const git = (...args) => execFileSync('git', args, { cwd: dir, encoding: 'utf8' }).trim();
+  assert.match(git('rev-parse', '--verify', 'refs/remotes/origin/main'), /^[0-9a-f]{40,64}$/);
+  assert.equal(git('merge-base', 'HEAD', 'origin/main'), forkPoint);
 });

@@ -52,6 +52,8 @@ scripts/
                           #   failure_code / platform_publishes
   build-report.js         # report markdown, from artifacts (local) or a job body (platform)
   build-fix-prompt.js     # fix-only prompt built from a failing verdict
+  fix-paths.js            # the paths a fix touched: a tree snapshot before it, the diff
+                          #   after it, and the staging of those paths alone
 tests/
   *.test.js               # node --test, no dependencies
   action-inputs.test.js   #   the action.yml <-> resolve-plan.js seams: every referenced

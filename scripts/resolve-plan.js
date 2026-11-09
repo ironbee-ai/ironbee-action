@@ -559,6 +559,7 @@ function skippedPlan(skipReason) {
     target: null,
     needsApp: false,
     canFix: false,
+    fixRefused: false,
     verbose: false,
     excludeFiles: false,
     consoleUrl: '',
@@ -585,6 +586,11 @@ function resolvePlan(input) {
   // Before every other check, and before any credential is required: a run that
   // is not going to happen must not also complain about how it was configured.
   //
+  // A comment on a plain issue has no pull request to verify, and nothing about
+  // it is looked up. Only an explicit answer lets a comment through.
+  if (input.eventName === 'issue_comment' && !truthy(input.commentOnPullRequest)) {
+    return skippedPlan('this comment is on an issue, not a pull request');
+  }
   // A comment the parser did not read as the command asked for nothing. The
   // workflow's own filter is a prefix match, so `/ironbee-verify.` gets this far.
   if (input.eventName === 'issue_comment' && !truthy(input.commandMatched)) {
@@ -683,6 +689,9 @@ function resolvePlan(input) {
       'fix is enabled but no Anthropic credential is set — the run will verify and report, and fix nothing',
     );
   }
+  // A comment's --fix that this workflow does not apply, for whichever reason:
+  // the report says so, or the author waits for commits that are not coming.
+  const fixRefused = input.eventName === 'issue_comment' && commandFix && !canFix;
 
   // Started by this action only for a platform tunnel run. A deployed URL was
   // started by whoever deployed it, and in local mode the agent starts the
@@ -734,6 +743,7 @@ function resolvePlan(input) {
     target,
     cliArgs,
     canFix,
+    fixRefused,
     needsApp,
     // Two verifications whenever a fix round can run and there is something to
     // restart: the first, then one against the repaired application.
@@ -796,6 +806,7 @@ function readInput() {
     fix: process.env.INPUT_VERIFICATION_APPLY_FIX,
     commandFix: process.env.COMMAND_FIX,
     commandMatched: process.env.COMMAND_MATCHED,
+    commentOnPullRequest: process.env.COMMENT_ON_PULL_REQUEST,
     model: process.env.INPUT_CLAUDE_CODE_MODEL,
     maxTurns: process.env.INPUT_CLAUDE_CODE_MAX_TURNS,
     claudeArgs: process.env.INPUT_CLAUDE_CODE_ARGS,
@@ -829,6 +840,7 @@ function writeOutputs(plan) {
     ['target_port', plan.target && plan.target.kind === 'tunnel' ? String(plan.target.port) : ''],
     ['needs_app', plan.needsApp ? 'true' : 'false'],
     ['can_fix', plan.canFix ? 'true' : 'false'],
+    ['fix_refused', plan.fixRefused ? 'true' : 'false'],
     ['verbose', plan.verbose ? 'true' : 'false'],
     ['exclude_files', plan.excludeFiles ? 'true' : 'false'],
     ['console_url', plan.consoleUrl],
