@@ -307,8 +307,9 @@ must then still find `actions/upload-artifact@v4`, which that entry point names)
   | `actions/checkout`, in your workflow | `v4` |
 
 - A runner needs `gh`, `jq`, `git` and `curl`; GitHub Actions Runner 2.327.1 or
-  newer whenever the action uploads an artifact (`actions/upload-artifact@v3.2.2`
-  runs on Node 24); in local mode, root or password-less `sudo` for the browser's
+  newer for the `ghes` entry point in every mode (the runner loads
+  `actions/upload-artifact@v3.2.2`, which runs on Node 24, when it sets up the
+  job, even where the upload is skipped); in local mode, root or password-less `sudo` for the browser's
   system packages; and, when a private authority signed the server's
   certificate, `NODE_EXTRA_CA_CERTS` naming it.
 - A runner reaches, on 443, the IronBee API and collector, the npm registry,
