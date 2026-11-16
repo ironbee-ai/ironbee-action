@@ -1453,20 +1453,16 @@ runs:
 
         echo "has_artifacts=$HAS_ARTIFACTS" >> "$GITHUB_OUTPUT"
 
+    # The two uploads differ by entry point. GitHub Enterprise Server serves no
+    # v4 of upload-artifact, and github.com refuses v3 when it sets the job up,
+    # skipped steps included: action.yml names v4 and skips both on that server,
+    # and ghes/action.yml, generated from it by scripts/build-ghes-action.js,
+    # names v3.2.2 and runs them there alone. v3.2.2 answers no artifact
+    # address, so the report there has no download link.
     - name: Upload verification evidence
       id: upload-artifacts
       if: always() && steps.plan.outputs.mode == 'local' && steps.collect.outputs.has_artifacts == 'true' && steps.github-host.outputs.flavor != 'ghes'
       uses: actions/upload-artifact@v4
-      with:
-        name: ironbee-verification-evidence
-        path: ${{ inputs.working_directory }}/.ironbee/artifacts/
-        retention-days: 30
-
-    # GitHub Enterprise Server serves no v4; this is the version it names. It
-    # answers no artifact address, so the report there has no download link.
-    - name: Upload verification evidence on GitHub Enterprise Server
-      if: always() && steps.plan.outputs.mode == 'local' && steps.collect.outputs.has_artifacts == 'true' && steps.github-host.outputs.flavor == 'ghes'
-      uses: actions/upload-artifact@v3.2.2
       with:
         name: ironbee-verification-evidence
         path: ${{ inputs.working_directory }}/.ironbee/artifacts/
@@ -1745,21 +1741,10 @@ runs:
           rm -f .ironbee/app.pid
         fi
 
+    # Differs by entry point, as the evidence's upload does.
     - name: Upload the application log
       if: always() && steps.plan.outputs.needs_app == 'true' && steps.github-host.outputs.flavor != 'ghes'
       uses: actions/upload-artifact@v4
-      with:
-        name: ironbee-application-log
-        path: |
-          ${{ inputs.working_directory }}/.ironbee/artifacts/app.log
-          ${{ inputs.working_directory }}/.ironbee/artifacts/app-service-logs.txt
-        if-no-files-found: ignore
-        retention-days: 30
-
-    # The version GitHub Enterprise Server serves, as for the evidence.
-    - name: Upload the application log on GitHub Enterprise Server
-      if: always() && steps.plan.outputs.needs_app == 'true' && steps.github-host.outputs.flavor == 'ghes'
-      uses: actions/upload-artifact@v3.2.2
       with:
         name: ironbee-application-log
         path: |

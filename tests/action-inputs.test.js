@@ -746,7 +746,7 @@ const GH_ENV = [
 
 // A floor, so a detector that broke cannot pass the test below by finding nothing.
 test('action.yml: the steps that call gh are found', () => {
-  assert.ok(STEPS.length > 40, `only ${String(STEPS.length)} steps found — the shape changed`);
+  assert.ok(STEPS.length > 30, `only ${String(STEPS.length)} steps found — the shape changed`);
   const found = STEPS.filter((s) => callsGh(s.script)).map((s) => s.name);
   for (const name of [
     'Answer a malformed command',
@@ -793,28 +793,25 @@ test('action.yml: the plan step hands the script the server URL', () => {
   assert.match(header('Resolve the verification plan'), /\n\s+SERVER_URL: \$\{\{ github\.server_url \}\}\n/);
 });
 
-// GitHub Enterprise Server serves no v4 of upload-artifact. Each upload has a
-// twin on the version it serves, under the same condition otherwise and with
-// the same inputs, and the v4 step runs everywhere else.
-test('action.yml: each artifact upload has a GitHub Enterprise Server twin on v3.2.2', () => {
+// github.com resolves every `uses:` when it sets the job up, skipped steps
+// included, and refuses v3 of the artifact actions: one v3 reference here fails
+// every run there before its first step. The server's v3.2.2 lives in
+// ghes/action.yml alone, and this file's v4 uploads are skipped on the server.
+test('action.yml: each artifact upload is on v4, skipped on GitHub Enterprise Server', () => {
   const uploads = STEPS.filter((s) => /\n\s+uses: actions\/upload-artifact@/.test(s.header));
-  const v4 = uploads.filter((s) => /\n\s+uses: actions\/upload-artifact@v4\n/.test(s.header));
-  const ghes = uploads.filter((s) => /\n\s+uses: actions\/upload-artifact@v3\.2\.2\n/.test(s.header));
-  assert.equal(v4.length, 2);
-  assert.equal(ghes.length, v4.length);
-  assert.equal(uploads.length, v4.length + ghes.length);
-
-  const condition = (s) => s.header.match(/\n\s+if: (.*)\n/)[1];
-  const inputs = (s) => s.header.slice(s.header.indexOf('\n      with:'));
-  for (const step of v4) {
-    const twin = ghes.find((candidate) => candidate.name === `${step.name} on GitHub Enterprise Server`);
-    assert.ok(twin, step.name);
-    assert.ok(condition(step).endsWith(" && steps.github-host.outputs.flavor != 'ghes'"), step.name);
-    assert.equal(condition(twin), condition(step).replace("flavor != 'ghes'", "flavor == 'ghes'"), step.name);
-    assert.equal(inputs(twin), inputs(step), step.name);
-    // v3.2.2 answers no address, so only the v4 step is read for one.
-    assert.doesNotMatch(twin.header, /\n\s+id:/, twin.name);
+  assert.deepEqual(uploads.map((s) => s.name), ['Upload verification evidence', 'Upload the application log']);
+  for (const s of uploads) {
+    assert.match(s.header, /\n\s+uses: actions\/upload-artifact@v4\n/, s.name);
+    assert.ok(s.header.match(/\n\s+if: (.*)\n/)[1].endsWith(" && steps.github-host.outputs.flavor != 'ghes'"), s.name);
   }
+});
+
+test('action.yml: names no v3 action anywhere', () => {
+  const offending = ACTION.split('\n')
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /@v3\b/.test(line))
+    .map(({ line, index }) => `line ${String(index + 1)}: ${line.trim()}`);
+  assert.deepEqual(offending, []);
 });
 
 // The version GitHub Enterprise Server serves answers no address. Quoted, the

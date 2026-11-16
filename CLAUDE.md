@@ -46,6 +46,8 @@ This is a **composite action** (`runs: using: composite`) — not a JS action. I
 
 ```
 action.yml                # Composite action definition — steps only
+ghes/action.yml           # GitHub Enterprise Server entry point, generated from
+                          #   action.yml by scripts/build-ghes-action.js
 scripts/
   resolve-plan.js         # mode, target, port, repo binding, CLI flags, budget floor
   github-host.js          # the host of the server URL and its flavor (github_com /
@@ -56,14 +58,16 @@ scripts/
   build-fix-prompt.js     # fix-only prompt built from a failing verdict
   fix-paths.js            # the paths a fix touched: a tree snapshot before it, the diff
                           #   after it, and the staging of those paths alone
+  build-ghes-action.js    # writes ghes/action.yml from action.yml; --check fails on drift
 tests/
   *.test.js               # node --test, no dependencies
   action-inputs.test.js   #   the action.yml <-> resolve-plan.js seams: every referenced
                           #   input declared, every read env var exported, every table
                           #   entry's fallback equal to the declared default
 .github/workflows/
-  build.yml               # CI: validate action.yml + run the script tests
-  release.yml             # Release: tag + GitHub Release
+  build.yml               # CI: validate both entry points, check ghes/action.yml is
+                          #   the generated one, run the script tests
+  release.yml             # Release: check ghes/action.yml, tag + GitHub Release
 CLAUDE.md                 # This file
 README.md                 # Usage documentation
 LICENSE                   # MIT
@@ -152,7 +156,8 @@ copied into `fallback`.
 - IronBee hooks enforce verification flow (recording, screenshots, verdicts)
 - PR comments are created/updated (not duplicated) using GitHub API
 - No report comment when the job carries a `publication` (`platform_publishes=true` from `read-job.js`, the re-verified job's answer first): the platform writes that run on the pull request itself, and the report stays in the step summary. Only presence counts, never its `status`; an older API that leaves the field out reads as none
-- Evidence uploaded via `actions/upload-artifact@v4` with 30-day retention. GitHub Enterprise Server serves no v4: each upload has a twin on `@v3.2.2` under `steps.github-host.outputs.flavor == 'ghes'`, and the v4 step runs everywhere else. That version answers no artifact address, so the report there has no download link
+- Evidence uploaded via `actions/upload-artifact@v4` with 30-day retention, skipped under `steps.github-host.outputs.flavor == 'ghes'`. GitHub Enterprise Server serves no v4, and github.com refuses v3 when it sets the job up (a skipped step's `uses:` included), so `action.yml` names no v3 action at all. The server has its own entry point, `ghes/action.yml` (`ironbee-ai/ironbee-action/ghes@v1`), generated from `action.yml` by `scripts/build-ghes-action.js`: the uploads on `@v3.2.2` and run on the server alone, the scripts one level up, the name and description its own, nothing else. That version answers no artifact address, so the report there has no download link
+- **Never edit `ghes/action.yml` by hand.** Change `action.yml`, then run `node scripts/build-ghes-action.js`; `tests/build-ghes-action.test.js` and the CI's `--check` fail on a copy that is not the generated one, and the release stops before tagging on such a copy
 - Every step that calls `gh` sets `GH_HOST` from the `github-host` step and hands the token as both `GH_TOKEN` and `GH_ENTERPRISE_TOKEN` (`gh` reads the first on github.com and `*.ghe.com`, the second on a GitHub Enterprise Server); `tests/action-inputs.test.js` fails on a `gh` step without them
 - PR comment includes a session-level IronBee Console link (above the verdict badge) and a per-cycle verification link (`?activityId=…&verificationId=…`) under each cycle heading; host from `ironbee_console_url`, or derived from the collector's stage when that is unset
 - User prompt passed via env var to prevent shell command substitution

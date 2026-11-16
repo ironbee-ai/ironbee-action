@@ -278,7 +278,19 @@ the workflow's token.
   set `ironbee_bind_repository: false` or `verification_mode: local`, or a
   platform run stops, finding no repository to bind.
 
-**On GitHub Enterprise Server**:
+**On GitHub Enterprise Server**, name the server's entry point:
+
+```yaml
+      - uses: ironbee-ai/ironbee-action/ghes@v1
+```
+
+It is the same action, with the same inputs and outputs, except for its artifact
+uploads: the server serves no v4 of `actions/upload-artifact`, and github.com
+refuses v3 even in a step it skips, so `ironbee-ai/ironbee-action@v1` names v4
+and skips its uploads on the server, and `ironbee-ai/ironbee-action/ghes@v1`
+names `v3.2.2` and uploads there. A workflow on the server that names
+`ironbee-ai/ironbee-action@v1` still runs, without the artifacts (the server
+must then still find `actions/upload-artifact@v4`, which that entry point names).
 
 - It has no hosted runners: `runs-on` names your own.
 - It looks for an action on the server first. A site admin makes these available
@@ -288,10 +300,10 @@ the workflow's token.
 
   | Action | Version |
   |---|---|
-  | `ironbee-ai/ironbee-action` | the one your workflow names |
+  | `ironbee-ai/ironbee-action` | the one your workflow names. The repository carries both entry points, so syncing it with `actions-sync` brings `ghes` along |
   | `actions/setup-node` | `v4` |
   | `actions/cache` | `v4` |
-  | `actions/upload-artifact` | `v4` and `v3.2.2` |
+  | `actions/upload-artifact` | `v3.2.2` |
   | `actions/checkout`, in your workflow | `v4` |
 
 - A runner needs `gh`, `jq`, `git` and `curl`; GitHub Actions Runner 2.327.1 or
@@ -304,10 +316,10 @@ the workflow's token.
   download in local mode, github.com for the Node download, and, in platform mode
   with the application on the runner, the verification tunnel's endpoint the API
   gives the run.
-- The evidence and the application log are uploaded with
-  `actions/upload-artifact@v3.2.2`, since the server serves no v4. That version
-  gives no address, so the report has no download link and `artifacts_url` stays
-  empty: find them among the workflow run's artifacts.
+- The server's entry point uploads the evidence and the application log with
+  `actions/upload-artifact@v3.2.2`. That version gives no address, so the report
+  has no download link and `artifacts_url` stays empty: find them among the
+  workflow run's artifacts.
 
 ## Give the job enough time
 
