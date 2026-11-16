@@ -15,6 +15,7 @@
 'use strict';
 
 const fs = require('fs');
+const { githubHost, GITHUB_COM } = require('./github-host');
 
 /**
  * Hostnames and addresses the platform cannot reach.
@@ -157,10 +158,10 @@ const MODE_PLATFORM = 'platform';
 /**
  * Picks where the verification runs, and says why in a sentence the step logs.
  *
- * Reads two things, both free: whether the repository is private (the event
- * payload says) and whether an Anthropic credential was supplied (the action's
- * own configuration). Nothing is asked of the platform, so the decision costs
- * no round trip and no quota.
+ * Reads three things, all free: whether the repository is private (the event
+ * payload says), the GitHub host the run is on, and whether an Anthropic
+ * credential was supplied (the action's own configuration). Nothing is asked of
+ * the platform, so the decision costs no round trip and no quota.
  *
  * The asymmetry it turns on: platform mode verifies a PUBLIC repository whether
  * or not the IronBee GitHub App is installed, because the run clones
@@ -168,8 +169,12 @@ const MODE_PLATFORM = 'platform';
  * is the case that needs the App, and whether the App is there is the one thing
  * that cannot be checked for free — so a private repository goes to the engine
  * this action knows can run, when there is one.
+ *
+ * Off github.com there is no anonymous clone: the platform reads a repository
+ * there only through the App registered for its host, so it counts as private
+ * whatever its visibility. A missing `host` is github.com.
  */
-function resolveMode({ verificationMode, hasAnthropicCredential, repositoryPrivate }) {
+function resolveMode({ verificationMode, hasAnthropicCredential, repositoryPrivate, host }) {
   const requested = String(verificationMode || MODE_AUTO).trim().toLowerCase();
 
   if (requested === MODE_LOCAL || requested === MODE_PLATFORM) {
@@ -182,22 +187,26 @@ function resolveMode({ verificationMode, hasAnthropicCredential, repositoryPriva
       error: `verification_mode must be one of auto, local, platform (got '${requested}')`,
     };
   }
-  if (!repositoryPrivate) {
+  const offGithubCom = present(host) && String(host).trim().toLowerCase() !== GITHUB_COM;
+  if (!repositoryPrivate && !offGithubCom) {
     return {
       mode: MODE_PLATFORM,
       reason: 'auto: the repository is public, so the platform can check it out',
     };
   }
+  const why = offGithubCom
+    ? `the repository is on ${String(host).trim()}, where the platform reads it only through the IronBee GitHub App,`
+    : 'the repository is private';
   if (hasAnthropicCredential) {
     return {
       mode: MODE_LOCAL,
-      reason: 'auto: the repository is private and an Anthropic credential is set — '
+      reason: `auto: ${why} and an Anthropic credential is set — `
         + 'set verification_mode: platform if the IronBee GitHub App covers this repository',
     };
   }
   return {
     mode: MODE_PLATFORM,
-    reason: 'auto: the repository is private and no Anthropic credential is set, '
+    reason: `auto: ${why} and no Anthropic credential is set, `
       + 'so the platform is the only engine available',
   };
 }
@@ -634,10 +643,13 @@ function resolvePlan(input) {
         + 'neither verification mode can run');
   }
 
+  // Off github.com the repository counts as private, so a scheduled run's
+  // visibility read that failed there cannot make it public.
   const { mode, reason, error: modeError } = resolveMode({
     verificationMode: input.verificationMode,
     hasAnthropicCredential,
     repositoryPrivate,
+    host: githubHost(input.serverUrl).host,
   });
   if (modeError) {
     errors.push(modeError);
@@ -781,6 +793,7 @@ function readInput() {
     claudeCodeOauthToken: process.env.INPUT_CLAUDE_CODE_OAUTH_TOKEN,
     ironbeeApiKey: process.env.INPUT_IRONBEE_API_KEY,
     repositoryPrivate: process.env.REPOSITORY_PRIVATE,
+    serverUrl: process.env.SERVER_URL,
     isFork: process.env.IS_FORK,
     eventName: process.env.EVENT_NAME,
     prNumber: process.env.PR_NUMBER,
