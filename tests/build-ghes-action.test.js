@@ -201,6 +201,7 @@ test('generator: refuses what it cannot carry over exactly', () => {
     [SMALL.replace('upload-artifact@v4', 'upload-artifact@v3.2.2'), /names a v3 action/],
     [SMALL.replace("\n      if: always() && steps.github-host.outputs.flavor != 'ghes'", ''), /an upload whose if: does not end with/],
     [SMALL.replace("flavor != 'ghes'", "flavor == 'github_com'"), /an upload whose if: does not end with/],
+    [SMALL.replace('if: always() && ', 'if: failure() || always() && '), /action\.yml line 7: an upload whose if: has \|\|/],
     [SMALL.replace('/scripts/gate.js', '/gate.js'), /a path from github\.action_path other than/],
     [SMALL.replace('"${{ github.action_path }}/scripts/gate.js"', '"$GITHUB_ACTION_PATH/scripts/gate.js"'), /GITHUB_ACTION_PATH/],
     [SMALL.replace('      uses: actions/upload-artifact@v4\n', '      uses: actions/cache@v4\n'), /no actions\/upload-artifact step found/],

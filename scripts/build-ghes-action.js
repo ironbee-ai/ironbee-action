@@ -100,7 +100,12 @@ function ghesAction(source) {
       throw new Error(`action.yml line ${String(index + 1)}: an upload whose if: does not end with${OFF_SERVER}`);
     }
     const at = conditions[0];
-    lines[at] = `${lines[at].slice(0, -OFF_SERVER.length)}${ON_SERVER}`;
+    // `&&` binds tighter than `||`, so the trailing flavor test would guard
+    // only the last operand of an `||` and the swap would change the meaning.
+    if (lines[at].includes('||')) {
+      throw new Error(`action.yml line ${String(at + 1)}: an upload whose if: has ||, which the trailing flavor test does not guard whole`);
+    }
+    lines[at] =`${lines[at].slice(0, -OFF_SERVER.length)}${ON_SERVER}`;
     lines[index] = `${indent}uses: ${UPLOAD}@${UPLOAD_ON_SERVER}`;
     uploads += 1;
   });
