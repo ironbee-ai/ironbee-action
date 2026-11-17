@@ -50,6 +50,34 @@ function stepAround(lines, at) {
   return { start, end };
 }
 
+/** Whether an expression has an `||` outside parentheses and string literals. */
+function hasTopLevelOr(expression) {
+  let depth = 0;
+  let quote = null;
+  for (let at = 0; at < expression.length; at += 1) {
+    const char = expression[at];
+    if (quote !== null) {
+      if (char === quote) {
+        // A doubled single quote is an escaped one, inside the string.
+        if (quote === "'" && expression[at + 1] === "'") {
+          at += 1;
+        } else {
+          quote = null;
+        }
+      }
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (char === '(') {
+      depth += 1;
+    } else if (char === ')') {
+      depth -= 1;
+    } else if (char === '|' && expression[at + 1] === '|' && depth <= 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** A top-level `key: '<value>'` line, rewritten by `change`. Exactly one is required. */
 function rewriteTopLevel(lines, key, change) {
   const pattern = new RegExp(`^${key}: '(.*)'$`);
@@ -101,9 +129,10 @@ function ghesAction(source) {
     }
     const at = conditions[0];
     // `&&` binds tighter than `||`, so the trailing flavor test would guard
-    // only the last operand of an `||` and the swap would change the meaning.
-    if (lines[at].includes('||')) {
-      throw new Error(`action.yml line ${String(at + 1)}: an upload whose if: has ||, which the trailing flavor test does not guard whole`);
+    // only the last operand of a top-level `||` and the swap would change the
+    // meaning. One inside parentheses or a string leaves it guarding the whole.
+    if (hasTopLevelOr(lines[at].slice(`${indent}if: `.length))) {
+      throw new Error(`action.yml line ${String(at + 1)}: an upload whose if: has an || outside parentheses, which the trailing flavor test does not guard whole`);
     }
     lines[at] =`${lines[at].slice(0, -OFF_SERVER.length)}${ON_SERVER}`;
     lines[index] = `${indent}uses: ${UPLOAD}@${UPLOAD_ON_SERVER}`;

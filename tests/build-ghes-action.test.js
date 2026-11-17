@@ -194,6 +194,22 @@ test('generator: the exact transformation of a small action', () => {
   ].join('\n'));
 });
 
+// An `||` inside parentheses or a string leaves the trailing flavor test
+// guarding the whole condition, so the swap keeps the meaning.
+test('generator: swaps an upload if: whose || sits inside parentheses or a string', () => {
+  const conditions = [
+    '(failure() || always())',
+    "always() && inputs.mode != 'x || y'",
+    "always() && inputs.mode != 'it''s || y'",
+    "always() && inputs.mode != \"x || y\"",
+  ];
+  for (const condition of conditions) {
+    const built = ghesAction(SMALL.replace("if: always() && steps.github-host.outputs.flavor != 'ghes'",
+      `if: ${condition}${OFF_SERVER}`));
+    assert.ok(built.includes(`\n      if: ${condition}${ON_SERVER}\n      uses: actions/upload-artifact@v3.2.2\n`), condition);
+  }
+});
+
 // A source it cannot turn into the server's entry point exactly is refused,
 // never guessed at.
 test('generator: refuses what it cannot carry over exactly', () => {
@@ -201,7 +217,9 @@ test('generator: refuses what it cannot carry over exactly', () => {
     [SMALL.replace('upload-artifact@v4', 'upload-artifact@v3.2.2'), /names a v3 action/],
     [SMALL.replace("\n      if: always() && steps.github-host.outputs.flavor != 'ghes'", ''), /an upload whose if: does not end with/],
     [SMALL.replace("flavor != 'ghes'", "flavor == 'github_com'"), /an upload whose if: does not end with/],
-    [SMALL.replace('if: always() && ', 'if: failure() || always() && '), /action\.yml line 7: an upload whose if: has \|\|/],
+    [SMALL.replace('if: always() && ', 'if: failure() || always() && '), /action\.yml line 7: an upload whose if: has an \|\| outside parentheses/],
+    [SMALL.replace('if: always() && ', 'if: (failure()) || always() && '), /an upload whose if: has an \|\| outside parentheses/],
+    [SMALL.replace('if: always() && ', "if: inputs.mode == 'it''s' || always() && "), /an upload whose if: has an \|\| outside parentheses/],
     [SMALL.replace('/scripts/gate.js', '/gate.js'), /a path from github\.action_path other than/],
     [SMALL.replace('"${{ github.action_path }}/scripts/gate.js"', '"$GITHUB_ACTION_PATH/scripts/gate.js"'), /GITHUB_ACTION_PATH/],
     [SMALL.replace('      uses: actions/upload-artifact@v4\n', '      uses: actions/cache@v4\n'), /no actions\/upload-artifact step found/],
