@@ -1,0 +1,1806 @@
+# Generated from action.yml by scripts/build-ghes-action.js: do not edit.
+# Run `node scripts/build-ghes-action.js` after changing action.yml.
+name: 'IronBee Action for GitHub Enterprise Server'
+description: 'Verify and fix code changes using IronBee CLI + Claude Code (the GitHub Enterprise Server variant)'
+author: 'IronBee'
+
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+inputs:
+  # ── Where the verification runs ────────────────────────────────────
+  verification_mode:
+    description: >-
+      Where the verification runs — one of: auto, platform, local.
+      "platform" starts a verification job on the IronBee platform and follows
+      it; "local" runs the agent on this runner with your own Anthropic
+      credential; "auto" picks platform for a public repository, and local for a
+      private one when an Anthropic credential is set (set "platform" explicitly
+      if the IronBee GitHub App covers it).
+    required: false
+    default: 'auto'
+
+  # ── IronBee — account & endpoints ──────────────────────────────────
+  ironbee_api_key:
+    description: 'IronBee API key. Authenticates the collector, and the platform API in platform mode.'
+    required: true
+  ironbee_api_url:
+    description: 'IronBee API base URL. Empty uses the CLI default.'
+    required: false
+    default: ''
+  ironbee_collector_url:
+    description: >-
+      IronBee collector endpoint URL. Empty uses the CLI default — and leaving it
+      empty is what lets the CLI resolve every other service URL to the same
+      stage, since an explicit one here is how it infers which stage that is.
+      The application's own commands (app_start_command, app_restart_command)
+      run with the resolved URL as IRONBEE_COLLECTOR_URL and the key as
+      IRONBEE_API_KEY in their environment, so a service whose OTel collector
+      reads them ships its traces and logs to the verification session.
+    required: false
+    default: ''
+  ironbee_console_url:
+    description: >-
+      IronBee Console hostname (no scheme) used to build session links in the
+      report. Empty derives it from ironbee_collector_url, so a non-production
+      collector does not produce production links.
+    required: false
+    default: ''
+  ironbee_cli_version:
+    description: 'IronBee CLI version to install (e.g. "1.0.0", "next", "latest").'
+    required: false
+    default: 'latest'
+  ironbee_project:
+    description: 'Project the results attach to. Empty derives it from the git remote.'
+    required: false
+    default: ''
+  ironbee_environment:
+    description: >-
+      Environment the run is against — the deployment this workflow is verifying,
+      by name (e.g. "staging", "production"). It selects the environment's own
+      variables and secrets on top of the project-wide ones; a name the project
+      has not seen is created by the first run that uses it, and leaving it empty
+      resolves the project-wide ones alone.
+
+      Empty falls back to the deployment environment when the event carries one
+      (`deployment` / `deployment_status`). It cannot be derived otherwise: a
+      job's own `environment:` key is not exposed to the job in any variable or
+      context, so on a push or a pull request there is nothing to read and the
+      workflow has to say which environment it is verifying.
+    required: false
+    default: ''
+
+  # ── IronBee — the verification job (platform mode only) ────────────
+  ironbee_bind_repository:
+    description: >-
+      One of: true, false. Bind the run to the repository so the agent reads the
+      changeset. Turn it off to verify the application without repository
+      context — which is what a private repository the IronBee GitHub App does
+      not cover needs.
+    required: false
+    default: 'true'
+  ironbee_job_timeout_minutes:
+    description: 'Run timeout for the verification job. Empty uses the API default.'
+    required: false
+    default: ''
+
+  # ── IronBee — DevTools platforms (local mode only) ─────────────────
+  ironbee_browser_devtools:
+    description: 'One of: true, false. Web UI, DOM, console, a11y, screenshots, recording.'
+    required: false
+    default: 'true'
+  ironbee_backend_devtools:
+    description: 'One of: true, false. HTTP, gRPC, GraphQL, WebSocket, DB, logs.'
+    required: false
+    default: 'false'
+  ironbee_node_devtools:
+    description: 'One of: true, false. Node.js runtime — tracepoints, exceptions, variables, HTTP capture.'
+    required: false
+    default: 'false'
+  ironbee_python_devtools:
+    description: 'One of: true, false. Python runtime (debugpy) — tracepoints, exceptions, logs, thread dumps.'
+    required: false
+    default: 'false'
+  ironbee_terminal_devtools:
+    description: >-
+      One of: true, false. CLI, REPL and TUI verification by driving a PTY.
+      This gives the agent a shell on the runner — enable it only where that is
+      the thing being verified.
+    required: false
+    default: 'false'
+
+  # ── IronBee — config & repo hygiene ────────────────────────────────
+  ironbee_extra_config:
+    description: 'Raw IronBee config as JSON. Deep-merged into the generated .ironbee/config.json; user keys win.'
+    required: false
+    default: ''
+  ironbee_exclude_files:
+    description: >-
+      One of: true, false. Keep IronBee-generated files (.ironbee/, .claude/,
+      .mcp.json, .gitignore) out of the commits this action makes. On by
+      default: they are this action's working files, not the change being
+      verified, and a commit only happens when a verification fails and a fix
+      is produced — so leaving them in adds machinery nobody wrote to a bug-fix
+      diff, on runs nobody can predict. Turn it off to let a run commit the
+      IronBee setup it generated.
+    required: false
+    default: 'true'
+
+  # ── Claude Code — auth ─────────────────────────────────────────────
+  anthropic_api_key:
+    description: 'Anthropic API key. Required for local mode, and for fixing in platform mode.'
+    required: false
+  claude_code_oauth_token:
+    description: 'Claude Code OAuth token — the alternative to the API key.'
+    required: false
+
+  # ── Claude Code — install & runtime (local mode only) ──────────────
+  claude_code_cli_version:
+    description: 'Claude Code CLI version to install (e.g. "1.0.0", "latest").'
+    required: false
+    default: 'latest'
+  claude_code_model:
+    description: 'Claude model for the agent that runs on this runner. Platform mode uses the platform default.'
+    required: false
+    default: ''
+  claude_code_max_turns:
+    description: 'Maximum conversation turns for the agent that runs on this runner.'
+    required: false
+    default: '100'
+  claude_code_args:
+    description: 'Additional Claude Code CLI arguments.'
+    required: false
+    default: ''
+
+  # ── What to verify, and what to do about it ────────────────────────
+  verification_prompt:
+    description: 'Additional instructions for the verification agent. Reaches whichever engine runs.'
+    required: false
+    default: ''
+  verification_auto:
+    description: >-
+      One of: true, false. Off means only a run somebody asked for by name — a
+      comment command or a manual dispatch — verifies anything; a push or a pull
+      request does nothing. It cannot save the workflow's own steps before this
+      action (checkout, builds, installs); a job-level `if:` is what does that.
+    required: false
+    default: 'true'
+  verification_command:
+    description: >-
+      The comment command that starts a run on an `issue_comment` event, as
+      `<command> [--fix] [<prompt>]`. Only read on that event; the workflow
+      decides who may use it.
+    required: false
+    default: '/ironbee-verify'
+  verification_apply_fix:
+    description: >-
+      One of: true, false. Apply fixes for the issues a failing verification
+      reports. Needs an Anthropic credential; without one the run verifies and
+      reports only.
+    required: false
+    default: 'true'
+
+  # ── Application under test ─────────────────────────────────────────
+  app_install_command:
+    description: 'Command to install application dependencies (e.g. "npm ci").'
+    required: false
+    default: ''
+  app_build_command:
+    description: 'Command to build the application before verification (e.g. "npm run build").'
+    required: false
+    default: ''
+  app_start_command:
+    description: >-
+      Command to start the application (e.g. "npm run dev"). It runs with
+      IRONBEE_COLLECTOR_URL and IRONBEE_API_KEY in its environment, the
+      collector of this run's stage, for the application's own telemetry.
+    required: false
+    default: ''
+  app_url:
+    description: >-
+      Application URL. A routable URL is verified as a deployment; a localhost
+      one means the application runs on this runner and is reached through a
+      reverse tunnel.
+    required: false
+    default: ''
+  app_port:
+    description: >-
+      Local port the application listens on, for a tunnelled target. Required
+      when app_start_command is set without an app_url, or when app_url points
+      at localhost without a port. No default: a guessed port tunnels to
+      nothing and fails deep inside the run, and a default here would also be
+      indistinguishable from a port someone typed. The port in app_url wins
+      when both name one.
+    required: false
+    default: ''
+  app_restart_command:
+    description: >-
+      Command that restarts the application so it picks up the fixes, run
+      between the fix round and the re-verification. Empty stops the process
+      this action started and re-runs app_build_command (when set) and
+      app_start_command, which is right only when that command runs the
+      application itself: one that hands off — to
+      docker compose, a process manager, a service — leaves the application
+      running the pre-fix code, and the re-verification then reports a
+      confident result about code that no longer exists. For a compose project
+      whose services build from source, that command is
+      "docker compose up -d --build". Like app_start_command, it runs with
+      IRONBEE_COLLECTOR_URL and IRONBEE_API_KEY in its environment.
+    required: false
+    default: ''
+  app_logs_command:
+    description: >-
+      Command that prints the application's own logs, captured into the
+      evidence artifact after the run. Needed whenever app_start_command hands
+      off: what this action captures then is the lifecycle chatter of whatever
+      it launched, not the application, so a service that died or stopped
+      consuming leaves no trace and every question about it is answered by
+      guesswork. For a compose project:
+      "docker compose logs --no-color --tail=2000".
+    required: false
+    default: ''
+  app_wait_seconds:
+    description: 'How long to wait for the local application to accept connections. Empty uses the CLI default (60s).'
+    required: false
+    default: ''
+  app_headers:
+    description: 'Request headers for a deployed URL, one "Name: value" per line. Non-secret values only.'
+    required: false
+    default: ''
+  app_secret_headers:
+    description: >-
+      Request headers whose values are secret — a deployment-protection bypass,
+      an environment token. One "Name: value" per line, from a GitHub secret.
+      Encrypted by the service and never read back.
+    required: false
+    default: ''
+
+  # ── GitHub ─────────────────────────────────────────────────────────
+  github_token:
+    description: 'GitHub token for PR operations.'
+    required: false
+    default: ${{ github.token }}
+
+  # ── Action — general behaviour ─────────────────────────────────────
+  working_directory:
+    description: 'Working directory for verification.'
+    required: false
+    default: '.'
+  verbose:
+    description: >-
+      One of: true, false. Log each tool call the agent makes with its
+      arguments, the tool responses, the prompt, the artifact list and verdict
+      details. Off, the log carries what the agent says and how the run ended,
+      which is what a reader wants; a tool call every second is progress, not
+      information.
+    required: false
+    default: 'false'
+
+outputs:
+  verdict:
+    description: 'Verification verdict (pass / fail / not_applicable / unknown)'
+    value: ${{ steps.plan.outputs.mode != 'platform' && steps.verdict.outputs.status || steps.job-reverified.outputs.verdict || steps.job.outputs.verdict }}
+  mode:
+    description: 'Where the verification ran (platform / local)'
+    value: ${{ steps.plan.outputs.mode }}
+  job_id:
+    description: 'Verification job id — platform mode only; the last job when a fix was re-verified'
+    value: ${{ steps.job-reverified.outputs.job_id || steps.job.outputs.job_id }}
+  job_url:
+    description: 'IronBee Console link for the run — platform mode only, and only once the job claimed an attempt'
+    value: ${{ steps.job-reverified.outputs.job_url || steps.job.outputs.job_url }}
+  artifacts_url:
+    description: 'Download URL for verification evidence — local mode only; platform evidence lives in the Console'
+    value: ${{ steps.upload-artifacts.outputs.artifact-url }}
+  platform_publishes:
+    description: 'Whether the platform publishes the run on the pull request itself (true / false); when true the action posts no report comment'
+    value: ${{ steps.job-reverified.outputs.platform_publishes || steps.job.outputs.platform_publishes || 'false' }}
+
+runs:
+  using: 'composite'
+  steps:
+    # ── Setup ──────────────────────────────────────────────────────────
+    - name: Fetch git history for diff
+      shell: bash
+      env:
+        BASE_REF: ${{ github.event.pull_request.base.ref }}
+      run: |
+        # Unshallow so git diff / git log always work (even single-commit repos)
+        git fetch --unshallow origin 2>/dev/null || true
+        # The base named with its destination, so origin/<base> exists whatever
+        # the checkout's own refspec covers. A depth makes a complete history
+        # shallow again, and a merge base further back than it is then not
+        # found: the depth only where the unshallow did not take.
+        if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+          git fetch origin ${BASE_REF:+"+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"} --depth=50 2>/dev/null || true
+        else
+          git fetch origin ${BASE_REF:+"+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}"} 2>/dev/null || true
+        fi
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    # A composite action shares no environment between its steps, so each step
+    # that calls `gh` sets GH_HOST from this output and hands the token as both
+    # GH_TOKEN and GH_ENTERPRISE_TOKEN: `gh` reads the first on github.com and
+    # *.ghe.com, the second on a GitHub Enterprise Server.
+    - name: Read the GitHub host
+      id: github-host
+      shell: bash
+      env:
+        SERVER_URL: ${{ github.server_url }}
+      run: node "${{ github.action_path }}/../scripts/github-host.js"
+
+    # ── The comment command ────────────────────────────────────────────
+    #
+    # WHO may run it is the workflow's decision, not this action's: an
+    # `issue_comment` event fires for anyone who can leave a comment and runs in
+    # the base repository WITH its secrets, so the author check has to happen in
+    # the `if:` that decides whether this job starts at all. By the time these
+    # steps run, that has been settled. What is left is WHAT was asked for.
+    #
+    # The body reaches the parser as an environment variable and never as part
+    # of a `run:` line — it is text a stranger wrote, and an interpolated
+    # `${{ github.event.comment.body }}` is a shell injection with this job's
+    # credentials.
+    #
+    # A comment on a plain issue is not read at all: there is no pull request to
+    # verify, and the plan skips the run.
+    - name: Read the comment command
+      id: command
+      if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+      shell: bash
+      env:
+        COMMENT_BODY: ${{ github.event.comment.body }}
+        COMMAND_NAME: ${{ inputs.verification_command }}
+      run: node "${{ github.action_path }}/../scripts/parse-command.js"
+
+    # A typed `--` says the author meant an option, so a misspelt one is
+    # answered rather than quietly read as prose. The reply is the whole
+    # outcome: the run stops here, and stops green — a red X for a typo in a
+    # comment would report that the workflow broke.
+    - name: Answer a malformed command
+      if: github.event_name == 'issue_comment' && steps.command.outputs.error != ''
+      shell: bash
+      env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
+        ERROR: ${{ steps.command.outputs.error }}
+        ISSUE_NUMBER: ${{ github.event.issue.number }}
+      run: |
+        printf '%s\n' "$ERROR" > .ironbee-command-error.txt
+        gh api "repos/${{ github.repository }}/issues/${ISSUE_NUMBER}/comments" \
+          -F "body=@.ironbee-command-error.txt" >/dev/null
+        rm -f .ironbee-command-error.txt
+        echo "::error::$ERROR"
+        exit 1
+
+    # Acknowledged on the comment itself rather than only in a reply: an
+    # `issue_comment` run does not appear in the pull request's checks, so
+    # without this the author has nothing to tell "it started" from "nothing
+    # listened". The reaction is replaced by the outcome one at the end.
+    - name: Acknowledge the command
+      if: github.event_name == 'issue_comment' && steps.command.outputs.ok == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
+        COMMENT_ID: ${{ github.event.comment.id }}
+      run: |
+        gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
+          -f content=eyes >/dev/null
+
+    # The pull request a comment names is not on the event: `issue_comment`
+    # carries an issue, and a pull request's head repository has to be read back.
+    # It decides one thing here — whether this is a fork — and the plan refuses
+    # the run if it is. A comment run holds this repository's secrets, so
+    # building and starting a fork's code under it hands them to whoever opened
+    # the pull request. Run on every pull request comment, whatever the parser
+    # made of it: the plan refuses a comment run that has no answer here. A plain
+    # issue has no pull request to look up.
+    - name: Resolve the pull request behind the comment
+      id: comment-pr
+      if: github.event_name == 'issue_comment' && github.event.issue.pull_request
+      shell: bash
+      env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
+        ISSUE_NUMBER: ${{ github.event.issue.number }}
+      run: |
+        PR_JSON="$(gh api "repos/${{ github.repository }}/pulls/${ISSUE_NUMBER}")"
+        HEAD_REPO="$(printf '%s' "$PR_JSON" | jq -r '.head.repo.full_name')"
+        if [ "$HEAD_REPO" != "${{ github.repository }}" ]; then
+          echo "is_fork=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "is_fork=false" >> "$GITHUB_OUTPUT"
+        fi
+        # The branch a fix lands on and the base a local run diffs against —
+        # both on the pull request, neither on the comment's own event.
+        {
+          printf 'head_ref=%s\n' "$(printf '%s' "$PR_JSON" | jq -r '.head.ref')"
+          printf 'base_ref=%s\n' "$(printf '%s' "$PR_JSON" | jq -r '.base.ref')"
+          printf 'title=%s\n' "$(printf '%s' "$PR_JSON" | jq -r '.title' | tr -d '\n\r')"
+        } >> "$GITHUB_OUTPUT"
+
+
+    # ── Decide what runs, and where ────────────────────────────────────
+    #
+    # Every decision the action makes lives in one script so it can be tested:
+    # the mode, the target, the repository binding, the flags. This step reads
+    # the answers and nothing else. It runs before any install, so a workflow
+    # that cannot run costs one Node startup rather than a Chromium download.
+    - name: Resolve the verification plan
+      id: plan
+      shell: bash
+      env:
+        INPUT_VERIFICATION_MODE: ${{ inputs.verification_mode }}
+        INPUT_IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
+        INPUT_ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        INPUT_CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        INPUT_APP_URL: ${{ inputs.app_url }}
+        INPUT_APP_START_COMMAND: ${{ inputs.app_start_command }}
+        INPUT_APP_PORT: ${{ inputs.app_port }}
+        INPUT_APP_RESTART_COMMAND: ${{ inputs.app_restart_command }}
+        INPUT_APP_LOGS_COMMAND: ${{ inputs.app_logs_command }}
+        INPUT_APP_WAIT_SECONDS: ${{ inputs.app_wait_seconds }}
+        INPUT_APP_HEADERS: ${{ inputs.app_headers }}
+        INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
+        INPUT_IRONBEE_PROJECT: ${{ inputs.ironbee_project }}
+        # The deployment environment is the one GitHub actually hands us, and
+        # only on a deployment event. A job's own `environment:` key reaches the
+        # job through no variable and no context, so there is nothing else to
+        # fall back to — an unset input on a push simply means no environment.
+        INPUT_IRONBEE_ENVIRONMENT: ${{ inputs.ironbee_environment || github.event.deployment.environment }}
+        INPUT_IRONBEE_CONSOLE_URL: ${{ inputs.ironbee_console_url }}
+        INPUT_IRONBEE_COLLECTOR_URL: ${{ inputs.ironbee_collector_url }}
+        INPUT_IRONBEE_BIND_REPOSITORY: ${{ inputs.ironbee_bind_repository }}
+        INPUT_IRONBEE_JOB_TIMEOUT_MINUTES: ${{ inputs.ironbee_job_timeout_minutes }}
+        INPUT_VERIFICATION_AUTO: ${{ inputs.verification_auto }}
+        INPUT_VERIFICATION_APPLY_FIX: ${{ inputs.verification_apply_fix }}
+        INPUT_CLAUDE_CODE_MODEL: ${{ inputs.claude_code_model }}
+        INPUT_CLAUDE_CODE_MAX_TURNS: ${{ inputs.claude_code_max_turns }}
+        INPUT_CLAUDE_CODE_ARGS: ${{ inputs.claude_code_args }}
+        INPUT_IRONBEE_BROWSER_DEVTOOLS: ${{ inputs.ironbee_browser_devtools }}
+        INPUT_IRONBEE_BACKEND_DEVTOOLS: ${{ inputs.ironbee_backend_devtools }}
+        INPUT_IRONBEE_NODE_DEVTOOLS: ${{ inputs.ironbee_node_devtools }}
+        INPUT_IRONBEE_PYTHON_DEVTOOLS: ${{ inputs.ironbee_python_devtools }}
+        INPUT_IRONBEE_TERMINAL_DEVTOOLS: ${{ inputs.ironbee_terminal_devtools }}
+        INPUT_IRONBEE_EXCLUDE_FILES: ${{ inputs.ironbee_exclude_files }}
+        INPUT_IRONBEE_EXTRA_CONFIG: ${{ inputs.ironbee_extra_config }}
+        INPUT_VERBOSE: ${{ inputs.verbose }}
+        REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        # Off github.com the plan counts the repository as private, whatever the
+        # visibility read below answers.
+        SERVER_URL: ${{ github.server_url }}
+        GH_HOST: ${{ steps.github-host.outputs.host }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
+        # The pull_request event carries the answer; a comment event does not,
+        # so the step above reads it back and both arrive here as one flag.
+        IS_FORK: ${{ github.event_name == 'issue_comment' && steps.comment-pr.outputs.is_fork || github.event.pull_request.head.repo.fork }}
+        COMMAND_FIX: ${{ steps.command.outputs.fix }}
+        COMMAND_MATCHED: ${{ steps.command.outputs.matched }}
+        COMMENT_ON_PULL_REQUEST: ${{ github.event.issue.pull_request && 'true' || 'false' }}
+        EVENT_NAME: ${{ github.event_name }}
+        # A comment's pull request is an issue number on its own event.
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        COMMIT_SHA: ${{ github.sha }}
+        BEFORE_SHA: ${{ github.event.before }}
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        # A scheduled run's event carries no repository, and an empty answer
+        # reads as public. Asked of the API instead; still empty if it cannot say.
+        # gh prints the error body on stdout when the call fails, so that is dropped.
+        if [ -z "$REPOSITORY_PRIVATE" ]; then
+          if ! REPOSITORY_PRIVATE="$(gh api "repos/${{ github.repository }}" --jq '.private' 2>/dev/null)"; then
+            REPOSITORY_PRIVATE=""
+          fi
+          export REPOSITORY_PRIVATE
+        fi
+
+        # The base of a push is a SHA this checkout may not have: the first push
+        # of a branch reports all zeros, and a force-push can name a commit that
+        # is gone. Both are forty hex characters and would pass every shape
+        # check on the way to failing at the platform's own checkout, so the
+        # question is answered here, where git can answer it.
+        BASE_USABLE=false
+        BASE_EMPTY=false
+        if [ -n "$BEFORE_SHA" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+          BASE_USABLE=true
+          # A base whose tree matches the commit's is a rewrite, not a
+          # changeset: the push replaced history without changing content, so
+          # measuring from it produces an empty diff and a run with nothing to
+          # review. Asked here because only git can answer it.
+          if git diff --quiet "$BEFORE_SHA" "$COMMIT_SHA" 2>/dev/null; then
+            BASE_EMPTY=true
+          fi
+        fi
+        export BASE_USABLE BASE_EMPTY
+
+        # The commit's own first parent, as the fallback base. Read out of the
+        # commit object rather than with `rev-parse "$COMMIT_SHA^"`, because the
+        # default checkout is one commit deep: the graft makes git report the
+        # commit as parentless, while the object it just fetched still names the
+        # parent on its own `parent` line. The base only has to exist on the
+        # remote — the run fetches both SHAs itself — and a parent always does
+        # when its child does.
+        PARENT_SHA=""
+        if [ -n "$COMMIT_SHA" ] && git cat-file -e "${COMMIT_SHA}^{commit}" 2>/dev/null; then
+          PARENT_SHA="$(git cat-file commit "$COMMIT_SHA" | awk '/^parent /{print $2; exit}')"
+        fi
+        export PARENT_SHA
+
+        node "${{ github.action_path }}/../scripts/resolve-plan.js"
+
+    # ── Preflight: refuse what cannot work, before installing anything ─
+    - name: Check the deployment is reachable
+      if: steps.plan.outputs.target_kind == 'url'
+      shell: bash
+      env:
+        APP_URL: ${{ inputs.app_url }}
+        INPUT_APP_HEADERS: ${{ inputs.app_headers }}
+        INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
+      run: |
+        # The headers the run will send, so a protection bypass passes here too.
+        # Only a platform run sends them; the local agent's browser does not.
+        # Read into this shell and handed to curl on stdin, never as arguments.
+        HEADER_LINES=""
+        if [ "${{ steps.plan.outputs.mode }}" = "platform" ]; then
+          HEADER_LINES="$(node "${{ github.action_path }}/../scripts/resolve-plan.js" --header-lines)"
+        fi
+        # Redirects are never followed, with headers or without: curl repeats
+        # custom headers to every host it is redirected to, and these carry
+        # secrets. The target is named instead, below.
+        CURL_ARGS=(-o /dev/null -s -w '%{http_code} %{redirect_url}' --max-time 15)
+        if [ -n "$HEADER_LINES" ]; then
+          CURL_ARGS+=(-H @-)
+        fi
+
+        # curl prints 000 itself when the connection fails, so nothing is appended to
+        # it; an empty answer is a curl that could not run at all.
+        ANSWER=$(printf '%s\n' "$HEADER_LINES" | curl "${CURL_ARGS[@]}" "$APP_URL" || true)
+        STATUS="${ANSWER%% *}"
+        REDIRECT=""
+        if [ "$STATUS" != "$ANSWER" ]; then
+          REDIRECT="${ANSWER#* }"
+        fi
+        if [ -z "$STATUS" ]; then
+          STATUS="000"
+        fi
+
+        if [ "$STATUS" = "401" ] || [ "$STATUS" = "403" ]; then
+          echo "::error::$APP_URL answers $STATUS — it is behind deployment protection."
+          echo "::error::The verification would report on the login page rather than on the application."
+          echo "::error::Pass its bypass header in app_secret_headers, or verify the application on this runner instead: set app_start_command and app_port, and leave app_url empty."
+          exit 1
+        fi
+
+        # A connection failure is not a refusal. This runner and the IronBee
+        # platform dial from different networks, so "unreachable from here" says
+        # nothing about whether the run can reach it.
+        if [ "$STATUS" = "000" ]; then
+          echo "::warning::$APP_URL did not answer from this runner. The verification runs from elsewhere and may still reach it."
+        elif [ "${STATUS#3}" != "$STATUS" ]; then
+          # A sign-in redirect to an identity provider, or http to https: the
+          # verification follows it, and reports on wherever it lands.
+          echo "::warning::$APP_URL answers $STATUS, redirecting to ${REDIRECT:-a target it does not name}. Not followed here; if that is a sign-in page, the verification will report on it rather than on the application."
+        else
+          echo "$APP_URL answers $STATUS"
+        fi
+
+    - name: Restore Playwright browser cache
+      id: playwright-cache
+      if: steps.plan.outputs.mode == 'local'
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/ms-playwright
+        key: playwright-chromium-${{ runner.os }}
+        restore-keys: playwright-chromium-${{ runner.os }}
+        save-always: true
+
+    # ── Install IronBee CLI ────────────────────────────────────────────
+    - name: Install IronBee CLI
+      if: steps.plan.outputs.mode != ''
+      shell: bash
+      run: |
+        # Resolve "latest" via `npm view` so the install pins to an explicit
+        # version — avoids any dist-tag / CDN cache surprises that can make
+        # `npm install -g @ironbee-ai/cli` silently pull an older release.
+        if [ -z "${{ inputs.ironbee_cli_version }}" ] || [ "${{ inputs.ironbee_cli_version }}" = "latest" ]; then
+          VERSION="$(npm view @ironbee-ai/cli version)"
+        else
+          VERSION="${{ inputs.ironbee_cli_version }}"
+        fi
+        echo "Installing @ironbee-ai/cli@${VERSION}"
+        npm install -g "@ironbee-ai/cli@${VERSION}"
+        INSTALLED="$(ironbee --version)"
+        echo "Installed @ironbee-ai/cli version: ${INSTALLED}"
+        echo "ironbee-version=${INSTALLED}" >> "$GITHUB_OUTPUT"
+        echo "ironbee-path=$(which ironbee)" >> "$GITHUB_OUTPUT"
+      id: install-cli
+
+    - name: Configure IronBee
+      if: steps.plan.outputs.mode == 'local'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        IRONBEE_COLLECTOR_URL: ${{ inputs.ironbee_collector_url }}
+        BROWSER_DEVTOOLS_ENABLE: ${{ inputs.ironbee_browser_devtools }}
+        BACKEND_DEVTOOLS_ENABLE: ${{ inputs.ironbee_backend_devtools }}
+        NODE_DEVTOOLS_ENABLE: ${{ inputs.ironbee_node_devtools }}
+        PYTHON_DEVTOOLS_ENABLE: ${{ inputs.ironbee_python_devtools }}
+        TERMINAL_DEVTOOLS_ENABLE: ${{ inputs.ironbee_terminal_devtools }}
+        EXTRA_CONFIG: ${{ inputs.ironbee_extra_config }}
+      run: |
+        mkdir -p .ironbee/artifacts
+        ARTIFACTS_DIR="$(pwd)/.ironbee/artifacts" node -e '
+          const fs = require("fs");
+          const dir = process.env.ARTIFACTS_DIR;
+          const toBool = (v) => /^(true|1|yes|on)$/i.test(String(v || "").trim());
+          const config = {
+            // The key is omitted rather than written empty when nobody named a
+            // collector: an explicit `collector.url` is what the CLI infers its
+            // service domain from, so writing one here would pin every other
+            // service URL to whatever stage this action guessed.
+            ...(process.env.IRONBEE_COLLECTOR_URL
+              ? { collector: { url: process.env.IRONBEE_COLLECTOR_URL } }
+              : {}),
+            // Cycle gating — drives whether the per-platform MCP server is
+            // registered in .mcp.json by `ironbee install`.
+            browser: { enable: toBool(process.env.BROWSER_DEVTOOLS_ENABLE) },
+            backend: { enable: toBool(process.env.BACKEND_DEVTOOLS_ENABLE) },
+            node:    { enable: toBool(process.env.NODE_DEVTOOLS_ENABLE) },
+            python:  { enable: toBool(process.env.PYTHON_DEVTOOLS_ENABLE) },
+            terminal:{ enable: toBool(process.env.TERMINAL_DEVTOOLS_ENABLE) },
+            // MCP env, merged into the server entry the CLI writes into
+            // .mcp.json for each cycle enabled above.
+            //
+            // Written twice because the override key follows the *physical*
+            // server name, and the CLI has two layouts: one composed server
+            // serving every enabled cycle (key `ironbeeDevTools`), or one
+            // server per cycle (key `<cycle>DevTools`). A composed CLI reads
+            // only the first block and a per-cycle CLI only the second, so
+            // both are written and the pinned version decides which applies.
+            // Writing one alone is how BROWSER_CHROMIUM_SANDBOX silently stops
+            // being applied on a CLI upgrade.
+            ironbeeDevTools: {
+              env: {
+                LOG_FILE: dir + "/ironbee-devtools-mcp.log",
+                BROWSER_CHROMIUM_SANDBOX: "false",
+              },
+            },
+            browserDevTools: {
+              env: {
+                LOG_FILE: dir + "/ironbee-browser-devtools-mcp.log",
+                // GitHub-hosted Linux runners reject user-namespace sandboxing;
+                // launch Chromium with --no-sandbox or it dies on first navigate
+                // with "Target page, context or browser has been closed".
+                BROWSER_CHROMIUM_SANDBOX: "false",
+              },
+            },
+            backendDevTools: {
+              env: { LOG_FILE: dir + "/ironbee-backend-devtools-mcp.log" },
+            },
+            nodeDevTools: {
+              env: { LOG_FILE: dir + "/ironbee-node-devtools-mcp.log" },
+            },
+            pythonDevTools: {
+              env: { LOG_FILE: dir + "/ironbee-python-devtools-mcp.log" },
+            },
+            terminalDevTools: {
+              env: { LOG_FILE: dir + "/ironbee-terminal-devtools-mcp.log" },
+            },
+          };
+          const extra = (process.env.EXTRA_CONFIG || "").trim();
+          if (extra) {
+            let parsed;
+            try { parsed = JSON.parse(extra); }
+            catch (e) {
+              console.error("::error::ironbee_extra_config is not valid JSON: " + e.message);
+              process.exit(1);
+            }
+            const merge = (target, source) => {
+              for (const key of Object.keys(source)) {
+                const sv = source[key];
+                if (sv && typeof sv === "object" && !Array.isArray(sv)) {
+                  if (!target[key] || typeof target[key] !== "object" || Array.isArray(target[key])) {
+                    target[key] = {};
+                  }
+                  merge(target[key], sv);
+                } else {
+                  target[key] = sv;
+                }
+              }
+              return target;
+            };
+            merge(config, parsed);
+          }
+          fs.writeFileSync(".ironbee/config.json", JSON.stringify(config, null, 2));
+        '
+
+    - name: Setup IronBee for Claude
+      if: steps.plan.outputs.mode == 'local'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
+        # The sessions in .ironbee/ under the working directory, where the
+        # verdict, the evidence and the fix detection read them; the CLI's
+        # default keeps them outside the project.
+        IRONBEE_RUNTIME_LOCATION: in-project
+      run: |
+        if [ "${{ steps.plan.outputs.exclude_files }}" = "true" ]; then
+          # Asked of git: in a subdirectory `.git` is not here, and the patterns
+          # are read from the repository root, so they carry this directory's prefix.
+          EXCLUDE_FILE="$(git rev-parse --git-path info/exclude)"
+          PREFIX="$(git rev-parse --show-prefix)"
+          mkdir -p "$(dirname "$EXCLUDE_FILE")"
+          echo "${PREFIX}.mcp.json" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.ironbee/" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/settings.json" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/skills/ironbee-*.md" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/rules/ironbee-*.md" >> "$EXCLUDE_FILE"
+          echo "${PREFIX}.claude/commands/ironbee-*.md" >> "$EXCLUDE_FILE"
+        fi
+
+        ironbee install --client claude
+
+    # ── Browser Setup ────────────────────────────────────────────────
+    - name: Install IronBee DevTools
+      if: steps.plan.outputs.mode == 'local'
+      shell: bash
+      env:
+        PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: 'true'
+      run: |
+        # Resolve "latest" via `npm view` so the install pins to an explicit
+        # version — same rationale as for @ironbee-ai/cli above.
+        VERSION="$(npm view @ironbee-ai/devtools version)"
+        echo "Installing @ironbee-ai/devtools@${VERSION}"
+        npm install -g "@ironbee-ai/devtools@${VERSION}"
+        echo "Installed @ironbee-ai/devtools version: ${VERSION}"
+
+    - name: Install Chromium and system dependencies
+      if: steps.plan.outputs.mode == 'local'
+      shell: bash
+      run: npx -y playwright install --with-deps chromium ffmpeg
+
+    # ── Build Verification Prompt ──────────────────────────────────────
+    - name: Build verification prompt
+      id: build-prompt
+      if: steps.plan.outputs.mode == 'local'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
+        DIFF_BASE: ${{ steps.plan.outputs.diff_base }}
+        CAN_FIX: ${{ steps.plan.outputs.can_fix }}
+        APP_PORT: ${{ steps.plan.outputs.target_port }}
+        # Event text — a title, branch names — reaches the script as values only.
+        # Each pair is one event's: a pull request's, or the comment step's.
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        PR_TITLE: ${{ github.event.pull_request.title || steps.comment-pr.outputs.title }}
+        PR_BASE_REF: ${{ github.event.pull_request.base.ref || steps.comment-pr.outputs.base_ref }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        ARTIFACTS_DIR="$(pwd)/.ironbee/artifacts"
+
+        # Determine trigger context and diff target
+        DIFF_TARGET=""
+        if [ "${{ github.event_name }}" = "pull_request" ]; then
+          CONTEXT="Pull Request #${PR_NUMBER}: ${PR_TITLE}"
+          DIFF_TARGET="origin/${PR_BASE_REF}"
+        elif [ "${{ github.event_name }}" = "issue_comment" ]; then
+          CONTEXT="Pull Request #${PR_NUMBER}: ${PR_TITLE}"
+          DIFF_TARGET="origin/${PR_BASE_REF}"
+        elif [ "${{ github.event_name }}" = "push" ]; then
+          CONTEXT="Push to ${REF_NAME} (commit ${{ github.sha }})"
+          # The plan's base, the push's own `before` first: the parent alone
+          # would narrow a multi-commit push to its last commit.
+          if [ -n "$DIFF_BASE" ]; then
+            DIFF_TARGET="$DIFF_BASE"
+          else
+            DIFF_TARGET="$(git hash-object -t tree /dev/null)"
+          fi
+        elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          CONTEXT="Manual run on ${REF_NAME}"
+        elif [ "${{ github.event_name }}" = "schedule" ]; then
+          CONTEXT="Scheduled run on ${REF_NAME}"
+        else
+          CONTEXT="${{ github.event_name }} on ${REF_NAME}"
+        fi
+
+        # Build the prompt
+        PROMPT=/tmp/ironbee-prompt.md
+        if [ -n "$DIFF_TARGET" ] && [ "$CAN_FIX" = "true" ]; then
+          echo "You are running in CI. Verify the code changes and fix any issues found." > "$PROMPT"
+        elif [ -n "$DIFF_TARGET" ]; then
+          echo "You are running in CI. Verify the code changes and report any issues found." > "$PROMPT"
+        else
+          echo "You are running in CI. Verify that the application is working correctly." > "$PROMPT"
+        fi
+        echo "" >> "$PROMPT"
+        echo "## Context" >> "$PROMPT"
+        echo "${CONTEXT}" >> "$PROMPT"
+        if [ -n "$DIFF_TARGET" ]; then
+          echo "Diff target: ${DIFF_TARGET}" >> "$PROMPT"
+        fi
+
+        # App configuration
+        if [ -n "${{ inputs.app_install_command }}" ] || [ -n "${{ inputs.app_build_command }}" ] || [ -n "${{ inputs.app_start_command }}" ] || [ -n "${{ inputs.app_url }}" ] || [ -n "$APP_PORT" ]; then
+          echo "" >> "$PROMPT"
+          echo "## Application" >> "$PROMPT"
+          if [ -n "${{ inputs.app_install_command }}" ]; then
+            echo "- Install command: \`${{ inputs.app_install_command }}\`" >> "$PROMPT"
+          fi
+          if [ -n "${{ inputs.app_build_command }}" ]; then
+            echo "- Build command: \`${{ inputs.app_build_command }}\`" >> "$PROMPT"
+          fi
+          if [ -n "${{ inputs.app_start_command }}" ]; then
+            echo "- Start command: \`${{ inputs.app_start_command }}\`" >> "$PROMPT"
+          fi
+          if [ -n "${{ inputs.app_url }}" ]; then
+            echo "- Application URL: ${{ inputs.app_url }}" >> "$PROMPT"
+          fi
+          # The plan's port, the one in app_url when both name one.
+          if [ -n "$APP_PORT" ]; then
+            echo "- Port the application listens on: ${APP_PORT}" >> "$PROMPT"
+          fi
+        fi
+
+        # Evidence instructions
+        echo "" >> "$PROMPT"
+        echo "## Evidence" >> "$PROMPT"
+        echo "Organize artifacts by verification cycle under: ${ARTIFACTS_DIR}/" >> "$PROMPT"
+        echo "IMPORTANT: Each verification cycle gets ONE directory. Increment the cycle number for each new cycle." >> "$PROMPT"
+        echo "  - Cycle 1 (fail + fix) = cycle-1/" >> "$PROMPT"
+        echo "  - Cycle 2 (re-verify) = cycle-2/" >> "$PROMPT"
+        echo "  Do NOT create multiple directories for the same cycle (e.g. cycle-1-fail AND cycle-1-pass)." >> "$PROMPT"
+        echo "Directory structure:" >> "$PROMPT"
+        echo "  ${ARTIFACTS_DIR}/cycle-<N>/screenshots/" >> "$PROMPT"
+        echo "  ${ARTIFACTS_DIR}/cycle-<N>/recordings/" >> "$PROMPT"
+        echo "Examples:" >> "$PROMPT"
+        echo "  cycle-1/screenshots/homepage-before-fix.png" >> "$PROMPT"
+        echo "  cycle-1/recordings/verification.webm" >> "$PROMPT"
+        echo "  cycle-2/screenshots/homepage-after-fix.png" >> "$PROMPT"
+        echo "  cycle-2/recordings/verification.webm" >> "$PROMPT"
+        echo "Use descriptive file names that reflect what is being verified." >> "$PROMPT"
+
+        # Append user's custom prompt
+        if [ -n "$USER_PROMPT" ]; then
+          echo "" >> "$PROMPT"
+          echo "## Additional Instructions" >> "$PROMPT"
+          printf "%s\n" "$USER_PROMPT" >> "$PROMPT"
+        fi
+
+        # Core instruction: run the IronBee verify command
+        echo "" >> "$PROMPT"
+        echo "## Task" >> "$PROMPT"
+        # Fixing off (the setting, or a comment without --fix): the agent reports
+        # and edits nothing, and the commit steps land nothing either.
+        if [ "$CAN_FIX" = "true" ]; then
+          ON_FAIL="fix the issues and re-verify"
+        else
+          ON_FAIL="report the issues and stop; do not edit any files"
+        fi
+        if [ -n "$DIFF_TARGET" ]; then
+          echo "1. Review the code changes: \`git diff ${DIFF_TARGET} --name-only\` and \`git diff ${DIFF_TARGET}\`" >> "$PROMPT"
+          echo "   IMPORTANT: Do NOT use \`git diff HEAD~1\`. Always use \`${DIFF_TARGET}\` as the diff target." >> "$PROMPT"
+          echo "2. Run /ironbee-verify to perform verification" >> "$PROMPT"
+          echo "3. If verification fails, ${ON_FAIL}" >> "$PROMPT"
+          echo "Do not commit, push, or open a pull request — that is handled for you." >> "$PROMPT"
+        else
+          echo "1. Run /ironbee-verify full to verify the application is working correctly" >> "$PROMPT"
+          echo "2. If verification fails, ${ON_FAIL}" >> "$PROMPT"
+          echo "Do not commit, push, or open a pull request — that is handled for you." >> "$PROMPT"
+        fi
+
+        # Output the prompt (multiline)
+        {
+          echo "prompt<<PROMPT_DELIM"
+          cat "$PROMPT"
+          echo "PROMPT_DELIM"
+        } >> "$GITHUB_OUTPUT"
+
+        if [ "${{ steps.plan.outputs.verbose }}" = "true" ]; then
+          echo "::group::Verification prompt"
+          cat "$PROMPT"
+          echo "::endgroup::"
+        fi
+
+    # ── Configure git identity ────────────────────────────────────────
+    - name: Configure git identity
+      if: steps.plan.outputs.mode != ''
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        git config user.name "github-actions[bot]"
+        git config user.email "github-actions[bot]@users.noreply.github.com"
+
+    # ── Install Claude Code CLI ─────────────────────────────────────
+    - name: Install Claude Code CLI
+      if: steps.plan.outputs.mode == 'local'
+      shell: bash
+      run: |
+        # Resolve "latest" via `npm view` so the install pins to an explicit
+        # version — same rationale as for @ironbee-ai/cli above.
+        if [ -z "${{ inputs.claude_code_cli_version }}" ] || [ "${{ inputs.claude_code_cli_version }}" = "latest" ]; then
+          VERSION="$(npm view @anthropic-ai/claude-code version)"
+        else
+          VERSION="${{ inputs.claude_code_cli_version }}"
+        fi
+        echo "Installing @anthropic-ai/claude-code@${VERSION}"
+        npm install -g "@anthropic-ai/claude-code@${VERSION}"
+        echo "Installed @anthropic-ai/claude-code version: $(claude --version)"
+
+    # ── Platform verification ──────────────────────────────────────────
+    #
+    # The application is started here only for a tunnel target: a deployed URL
+    # was started by whoever deployed it. It runs in the background for the
+    # length of the step, and is stopped by the teardown at the very end —
+    # after the fix round and any re-verification, both of which still need it.
+    - name: Start the application
+      if: steps.plan.outputs.needs_app == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        APP_INSTALL_COMMAND: ${{ inputs.app_install_command }}
+        APP_BUILD_COMMAND: ${{ inputs.app_build_command }}
+        APP_START_COMMAND: ${{ inputs.app_start_command }}
+        # The application's own commands run with the collector of this run's
+        # stage and its key in their environment, so a service whose OTel
+        # collector reads these ships its traces and logs to the verification
+        # session. Nothing is written to disk for it.
+        IRONBEE_COLLECTOR_URL: ${{ steps.plan.outputs.collector_url }}
+        IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
+      run: |
+        mkdir -p .ironbee/artifacts
+
+        if [ -n "$APP_INSTALL_COMMAND" ]; then
+          echo "::group::Installing application dependencies"
+          bash -c "$APP_INSTALL_COMMAND"
+          echo "::endgroup::"
+        fi
+        if [ -n "$APP_BUILD_COMMAND" ]; then
+          echo "::group::Building the application"
+          bash -c "$APP_BUILD_COMMAND"
+          echo "::endgroup::"
+        fi
+        if [ -z "$APP_START_COMMAND" ]; then
+          echo "::error::a tunnel target needs app_start_command to start the application"
+          exit 1
+        fi
+
+        # Both streams to one file, because "the app never started" and "the app
+        # answered 500" are the two failures a reader has to tell apart and the
+        # verdict shows neither.
+        # Job control on for this one command, so it leads a process group of its
+        # own and the restart and the stop end it whole, children included. Stdin
+        # is /dev/null, as a background command's is without job control.
+        set -m
+        nohup bash -c "$APP_START_COMMAND" < /dev/null > .ironbee/artifacts/app.log 2>&1 &
+        echo $! > .ironbee/app.pid
+        set +m
+        echo "Started the application (pid $(cat .ironbee/app.pid)); waiting for it happens in the CLI"
+
+    - name: Run platform verification
+      id: platform-verify
+      if: steps.plan.outputs.mode == 'platform'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
+        API_URL_OVERRIDE: ${{ inputs.ironbee_api_url }}
+        USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
+        CLI_ARGS: ${{ steps.plan.outputs.cli_args }}
+        INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
+      run: |
+        mkdir -p .ironbee/artifacts
+
+        # Exported only when set. The CLI reads this variable before it reads
+        # its own configuration, so an empty value would win over the endpoint
+        # the user configured and point the run at nothing.
+        if [ -n "$API_URL_OVERRIDE" ]; then
+          export IRONBEE_API_URL="$API_URL_OVERRIDE"
+        fi
+
+        # One argument per line: an argument can contain a space — a project
+        # name, a URL with one — and re-splitting a joined string is how such a
+        # value silently becomes two arguments. Written as an `if` rather than
+        # `[ -n "$line" ] && ARGS+=(…)`, whose status on the loop's last
+        # (empty) line is 1 and would end the step under `set -e`.
+        ARGS=()
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then
+            ARGS+=("$line")
+          fi
+        done <<< "$CLI_ARGS"
+
+        # Emitted straight into this step rather than carried on a step output:
+        # a step output is a file on the runner that outlives the step, and this
+        # one carries the caller's secret.
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then
+            ARGS+=("$line")
+          fi
+        done < <(node "${{ github.action_path }}/../scripts/resolve-plan.js" --secret-header-args)
+
+        # Through a file, never a shell word: the prompt is caller text and a
+        # command line is the one place it could become a command.
+        if [ -n "$USER_PROMPT" ]; then
+          printf '%s\n' "$USER_PROMPT" > .ironbee/prompt.txt
+          ARGS+=("--prompt-file" ".ironbee/prompt.txt")
+        fi
+
+        set +e
+        ironbee verify run web "${ARGS[@]}" > .ironbee/raw-output.txt
+        EXIT_CODE=$?
+        set -e
+
+        # The CLI asks the runner to mask the tunnel credentials by writing
+        # `::add-mask::` on stdout — the same stream `--json` writes the job to.
+        # Redirected to a file, those lines would never reach the runner AND
+        # would make the file unparseable, so they are re-emitted here and kept
+        # out of the JSON. The CLI's own redactor already covered its own output
+        # from the moment it registered them; this is the runner's copy.
+        grep '^::add-mask::' .ironbee/raw-output.txt || true
+        grep -v '^::add-mask::' .ironbee/raw-output.txt > .ironbee/artifacts/job.json || true
+
+        # Never fails the step. The report, the outputs and the teardown all
+        # have to run on whatever came back, and the recorded code is what the
+        # gate step at the end exits with.
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "Verification command exited $EXIT_CODE"
+
+    - name: Read the verification job
+      id: job
+      if: always() && steps.plan.outputs.mode == 'platform'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        node "${{ github.action_path }}/../scripts/read-job.js" \
+          .ironbee/artifacts/job.json "${{ steps.plan.outputs.console_url }}"
+
+    # ── Run Claude Code with IronBee ───────────────────────────────────
+    - name: Run Claude Code verification
+      id: claude-verify
+      if: steps.plan.outputs.mode == 'local'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
+        PROMPT_CONTENT: ${{ steps.build-prompt.outputs.prompt }}
+        # Its hooks write the session in .ironbee/, as above.
+        IRONBEE_RUNTIME_LOCATION: in-project
+      run: |
+        # Write prompt to file and pipe to claude
+        PROMPT_FILE=$(mktemp)
+        printf "%s" "$PROMPT_CONTENT" > "$PROMPT_FILE"
+
+        # Run Claude Code with the verification prompt (stream output for live CI logs)
+        LOG_FILE="$(pwd)/.ironbee/artifacts/claude-output.log"
+
+        # The tree before the agent runs. It verifies and fixes in this one
+        # invocation, so what changed after this is its fix, and what the IronBee
+        # setup or anything earlier left in the tree is not.
+        node "${{ github.action_path }}/../scripts/fix-paths.js" snapshot .ironbee/pre-fix-tree || {
+          echo "::warning::the tree before the fix could not be recorded; what changed is read from git status"
+          : > .ironbee/pre-fix-tree
+        }
+
+        cat "$PROMPT_FILE" | claude --output-format stream-json --verbose \
+          --max-turns ${{ inputs.claude_code_max_turns }} \
+          --dangerously-skip-permissions \
+          ${{ inputs.claude_code_model != '' && format('--model {0}', inputs.claude_code_model) || '' }} \
+          ${{ inputs.claude_code_args }} \
+          2>&1 | tee "$LOG_FILE.raw" | jq -r --unbuffered --arg verbose "${{ steps.plan.outputs.verbose }}" '
+            if .type == "assistant" and .message.content then
+              (.message.content[] |
+                if .type == "text" then "🤖 " + .text
+                elif .type == "tool_use" then (if $verbose == "true" then "🔧 " + .name + ": " + (.input | tostring | .[0:500]) else empty end)
+                else empty end)
+            elif .type == "user" and .message.content then
+              (.message.content[] |
+                if .type == "tool_result" then
+                  (if .is_error then "❌ Error: " + (.content | tostring | .[0:500])
+                   elif $verbose == "true" then "  ↳ " + (.content | tostring | .[0:500])
+                   else empty end)
+                else empty end)
+            elif .type == "result" then
+              "✅ Done (cost: $" + (.total_cost_usd // 0 | tostring) + ", turns: " + (.num_turns // 0 | tostring) + ")"
+            else empty end
+          ' 2>/dev/null | tee "$LOG_FILE" || true
+
+        rm -f "$PROMPT_FILE"
+
+        node "${{ github.action_path }}/../scripts/fix-paths.js" changed .ironbee/pre-fix-tree .ironbee/fix-paths || {
+          echo "::warning::what the fix changed could not be read; no path counts as fixed"
+          : > .ironbee/fix-paths
+        }
+        # A fix needs a fix cycle too: a failing verdict before the last one. The
+        # agent installs, builds and starts the application in this same run, and
+        # what those wrote is no fix on a run that never failed.
+        FIX_CYCLE="$(node "${{ github.action_path }}/../scripts/build-report.js" --fix-cycle .ironbee || echo false)"
+        if [ -s .ironbee/fix-paths ] && [ "$FIX_CYCLE" = "true" ]; then
+          echo "fixed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "fixed=false" >> "$GITHUB_OUTPUT"
+        fi
+
+    # ── Fix what the platform found ────────────────────────────────────
+    #
+    # A second, fix-only agent. It does not verify: a verdict already exists,
+    # produced by a run with a browser and the application in front of it, and
+    # asking this one to re-derive it from a text summary would get a worse
+    # answer at full price. Local mode has no equivalent step — its agent
+    # verifies and fixes inside one invocation.
+    # Installed here rather than with the local one, and gated on the verdict:
+    # a platform run that passes never pays for an agent it was not going to
+    # use, which is most of what platform mode is for.
+    - name: Install Claude Code CLI for the fix round
+      if: steps.plan.outputs.mode == 'platform' && steps.plan.outputs.can_fix == 'true' && steps.job.outputs.verdict == 'fail'
+      shell: bash
+      run: |
+        if [ -z "${{ inputs.claude_code_cli_version }}" ] || [ "${{ inputs.claude_code_cli_version }}" = "latest" ]; then
+          VERSION="$(npm view @anthropic-ai/claude-code version)"
+        else
+          VERSION="${{ inputs.claude_code_cli_version }}"
+        fi
+        echo "Installing @anthropic-ai/claude-code@${VERSION}"
+        npm install -g "@anthropic-ai/claude-code@${VERSION}"
+        echo "Installed @anthropic-ai/claude-code version: $(claude --version)"
+
+    - name: Fix the reported issues
+      id: platform-fix
+      if: steps.plan.outputs.mode == 'platform' && steps.plan.outputs.can_fix == 'true' && steps.job.outputs.verdict == 'fail'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic_api_key }}
+        CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.claude_code_oauth_token }}
+        IRONBEE_PROMPT_NONCE: ${{ github.run_id }}-${{ github.run_attempt }}
+      run: |
+        PROMPT_FILE=.ironbee/fix-prompt.txt
+        set +e
+        node "${{ github.action_path }}/../scripts/build-fix-prompt.js" \
+          .ironbee/artifacts/job.json "$PROMPT_FILE" "${{ steps.job.outputs.job_url }}"
+        BUILD_CODE=$?
+        set -e
+
+        # Exit 2 means the verdict carried no issues to work from. Not an error:
+        # a failing verdict without issues is a report a person has to read.
+        if [ "$BUILD_CODE" = "2" ]; then
+          echo "::warning::the verdict reported no issues to fix"
+          exit 0
+        fi
+        if [ "$BUILD_CODE" != "0" ]; then
+          echo "::error::could not build the fix prompt"
+          exit 1
+        fi
+
+        # The tree before the fix: what the install and the build left in it is
+        # not the fix.
+        node "${{ github.action_path }}/../scripts/fix-paths.js" snapshot .ironbee/pre-fix-tree || {
+          echo "::warning::the tree before the fix could not be recorded; what changed is read from git status"
+          : > .ironbee/pre-fix-tree
+        }
+
+        echo "::group::Fixing the reported issues"
+        cat "$PROMPT_FILE" | claude --output-format stream-json --verbose \
+          --max-turns 60 \
+          --dangerously-skip-permissions \
+          --strict-mcp-config --mcp-config '{"mcpServers":{}}' \
+          2>&1 | tee .ironbee/claude-fix.log.raw | jq -r --unbuffered --arg verbose "${{ steps.plan.outputs.verbose }}" '
+            if .type == "assistant" and .message.content then
+              (.message.content[] |
+                if .type == "text" then "🤖 " + .text
+                elif .type == "tool_use" then (if $verbose == "true" then "🔧 " + .name else empty end)
+                else empty end)
+            elif .type == "result" then
+              "✅ Fix round done (cost: $" + (.total_cost_usd // 0 | tostring) + ")"
+            else empty end
+          ' 2>/dev/null || true
+        echo "::endgroup::"
+
+        # Only what changed since the snapshot, and `.ironbee` never: this action
+        # writes into it — the job body, the prompts, the logs. Counting those, or
+        # a build's output, as "the agent changed something" would report a fix
+        # on a run that produced none, and then re-verify against unchanged code.
+        node "${{ github.action_path }}/../scripts/fix-paths.js" changed .ironbee/pre-fix-tree .ironbee/fix-paths || {
+          echo "::warning::what the fix changed could not be read; no path counts as fixed"
+          : > .ironbee/fix-paths
+        }
+        if [ -s .ironbee/fix-paths ]; then
+          # The agent's own account of the fixes, for the re-verification's
+          # prompt. The final result event carries its closing message, which is
+          # the summary the fix prompt asks for — every other assistant turn is
+          # thinking-aloud between tool calls, and concatenating them would
+          # spend the prompt budget on narration.
+          jq -r 'select(.type == "result") | .result // empty' \
+            .ironbee/claude-fix.log.raw > .ironbee/fix-summary.txt 2>/dev/null || true
+          # A run that ended without one still has its assistant turns, and a
+          # partial account beats none.
+          if [ ! -s .ironbee/fix-summary.txt ]; then
+            jq -r 'select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text' \
+              .ironbee/claude-fix.log.raw > .ironbee/fix-summary.txt 2>/dev/null || true
+          fi
+
+          echo "fixed=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "fixed=false" >> "$GITHUB_OUTPUT"
+          echo "::warning::the fix round changed no files"
+        fi
+
+    # A second verification, and only where it can mean anything. A tunnel
+    # target serves the fixed code the moment the application restarts; a
+    # deployed URL still serves what was deployed, so re-running against it
+    # would verify the same bytes and report a result unrelated to the fix.
+    - name: Re-verify after the fix
+      id: platform-reverify
+      if: steps.platform-fix.outputs.fixed == 'true' && steps.plan.outputs.needs_app == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        IRONBEE_API_KEY: ${{ inputs.ironbee_api_key }}
+        API_URL_OVERRIDE: ${{ inputs.ironbee_api_url }}
+        CLI_ARGS: ${{ steps.plan.outputs.cli_args }}
+        INPUT_APP_SECRET_HEADERS: ${{ inputs.app_secret_headers }}
+        APP_BUILD_COMMAND: ${{ inputs.app_build_command }}
+        APP_START_COMMAND: ${{ inputs.app_start_command }}
+        APP_RESTART_COMMAND: ${{ inputs.app_restart_command }}
+        # The restarted application reports to the same collector as the first
+        # run (IRONBEE_API_KEY is already in this step's environment).
+        IRONBEE_COLLECTOR_URL: ${{ steps.plan.outputs.collector_url }}
+        USER_PROMPT: ${{ steps.command.outputs.prompt || inputs.verification_prompt }}
+      run: |
+        if [ -n "$API_URL_OVERRIDE" ]; then
+          export IRONBEE_API_URL="$API_URL_OVERRIDE"
+        fi
+
+        # The running application is the pre-fix code. Replacing it is what
+        # makes the second run mean anything at all — a re-verification against
+        # the old bytes reports a confident verdict about code that no longer
+        # exists, in either direction: a good fix reads as still broken, and a
+        # transient first failure reads as fixed.
+        if [ -n "$APP_RESTART_COMMAND" ]; then
+          echo "Restarting the application with app_restart_command"
+          bash -c "$APP_RESTART_COMMAND" >> .ironbee/artifacts/app.log 2>&1 || {
+            echo "::error::app_restart_command failed; the re-verification would run against the pre-fix application"
+            exit 1
+          }
+        else
+          # Whether this action's own restart can work at all. The process it
+          # started being gone already means the start command handed off —
+          # to docker compose, a process manager, a service — so the kill below
+          # hits nothing and re-running the command is a no-op against an
+          # application that is still up. Said out loud, because the symptom
+          # otherwise is a re-verification that quietly tested the wrong code.
+          if [ -f .ironbee/app.pid ] && ! kill -0 "$(cat .ironbee/app.pid)" 2>/dev/null; then
+            echo "::warning::the process this action started is no longer running, so app_start_command hands the application off to something else"
+            echo "::warning::the restart before re-verification may not have replaced it, and the result may describe the pre-fix code"
+            echo "::warning::set app_restart_command to the command that rebuilds and restarts it (for compose: docker compose up -d --build)"
+          fi
+          # The whole process group the start command leads, so nothing it
+          # spawned keeps the port; the process alone when it leads none.
+          if [ -f .ironbee/app.pid ]; then
+            kill -- "-$(cat .ironbee/app.pid)" 2>/dev/null || kill "$(cat .ironbee/app.pid)" 2>/dev/null || true
+            sleep 2
+          fi
+          # Rebuilt first: a start command that serves built output would
+          # otherwise serve the pre-fix build.
+          if [ -n "$APP_BUILD_COMMAND" ]; then
+            echo "Rebuilding the application with app_build_command"
+            bash -c "$APP_BUILD_COMMAND" >> .ironbee/artifacts/app.log 2>&1 || {
+              echo "::error::app_build_command failed after the fix; the re-verification would run against the pre-fix application"
+              exit 1
+            }
+          fi
+          # In a process group of its own, as the first start was.
+          set -m
+          nohup bash -c "$APP_START_COMMAND" < /dev/null >> .ironbee/artifacts/app.log 2>&1 &
+          echo $! > .ironbee/app.pid
+          set +m
+        fi
+
+        ARGS=()
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then
+            ARGS+=("$line")
+          fi
+        done <<< "$CLI_ARGS"
+
+        # Emitted straight into this step rather than carried on a step output:
+        # a step output is a file on the runner that outlives the step, and this
+        # one carries the caller's secret.
+        while IFS= read -r line; do
+          if [ -n "$line" ]; then
+            ARGS+=("$line")
+          fi
+        done < <(node "${{ github.action_path }}/../scripts/resolve-plan.js" --secret-header-args)
+
+        # The caller's own prompt, which the first verification also carried,
+        # plus what the fix round says it repaired. Without the second half the
+        # run reads a repository that predates the fixes and reports them as
+        # unfixed; without the first it answers a narrower question than the
+        # verification it is repeating.
+        node "${{ github.action_path }}/../scripts/build-reverify-prompt.js" \
+          .ironbee/fix-summary.txt .ironbee/reverify-prompt.txt || true
+        if [ -s .ironbee/reverify-prompt.txt ]; then
+          ARGS+=("--prompt-file" ".ironbee/reverify-prompt.txt")
+        fi
+
+        set +e
+        ironbee verify run web "${ARGS[@]}" > .ironbee/raw-output.txt
+        EXIT_CODE=$?
+        set -e
+
+        grep '^::add-mask::' .ironbee/raw-output.txt || true
+        grep -v '^::add-mask::' .ironbee/raw-output.txt > .ironbee/artifacts/job.json || true
+
+        echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+        echo "Re-verification exited $EXIT_CODE"
+
+    - name: Read the re-verification job
+      id: job-reverified
+      if: steps.platform-reverify.conclusion == 'success'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        node "${{ github.action_path }}/../scripts/read-job.js" \
+          .ironbee/artifacts/job.json "${{ steps.plan.outputs.console_url }}"
+
+    # ── Discard IronBee-generated file changes ───────────────────────
+    - name: Discard IronBee config changes
+      if: always() && steps.plan.outputs.mode == 'local' && steps.plan.outputs.exclude_files == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        # Revert tracked files modified by ironbee install
+        git checkout -- .mcp.json .gitignore .claude/ .ironbee/config.json 2>/dev/null || true
+
+    # ── Collect Evidence ───────────────────────────────────────────────
+    - name: Extract verdict
+      id: verdict
+      if: always() && steps.plan.outputs.mode == 'local'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        STATUS="unknown"
+        SESSION_ID=""
+
+        # Prefer the most recently modified verdict.json (has both status and session_id)
+        VERDICT_FILE=$(find .ironbee/sessions -name "verdict.json" -type f 2>/dev/null | xargs -r ls -t 2>/dev/null | head -1)
+        if [ -n "$VERDICT_FILE" ] && [ -f "$VERDICT_FILE" ]; then
+          STATUS=$(node -e "const v=JSON.parse(require('fs').readFileSync('$VERDICT_FILE','utf8'));console.log(v.status||'unknown')" 2>/dev/null || echo "unknown")
+          # The session is the directory under sessions/: the verdict sits in
+          # it, or in its owning agent's directory below it.
+          SESSION_PATH="${VERDICT_FILE#.ironbee/sessions/}"
+          SESSION_ID="${SESSION_PATH%%/*}"
+          if [ "${{ steps.plan.outputs.verbose }}" = "true" ]; then
+            echo "::group::Verdict details"
+            cat "$VERDICT_FILE" | node -e "process.stdin.on('data',d=>console.log(JSON.stringify(JSON.parse(d),null,2)))" 2>/dev/null || cat "$VERDICT_FILE"
+            echo "::endgroup::"
+          fi
+        fi
+
+        # Fallback: derive status/session_id from the latest verdict_write event,
+        # read across every agent's actions.jsonl as the report reads them
+        if [ -z "$SESSION_ID" ] || [ "$STATUS" = "unknown" ]; then
+          EXTRACTED=$(node "${{ github.action_path }}/../scripts/build-report.js" --last-verdict .ironbee 2>/dev/null || echo "")
+          if [ -n "$EXTRACTED" ]; then
+            [ "$STATUS" = "unknown" ] && STATUS="${EXTRACTED%%|*}"
+            [ -z "$SESSION_ID" ] && SESSION_ID="${EXTRACTED##*|}"
+          fi
+        fi
+
+        # Fallback: session_id from the final result event in claude-output.log.raw
+        if [ -z "$SESSION_ID" ] && [ -f ".ironbee/artifacts/claude-output.log.raw" ]; then
+          SESSION_ID=$(node -e "
+            const lines=require('fs').readFileSync('.ironbee/artifacts/claude-output.log.raw','utf8').split('\n').filter(Boolean);
+            for (let i=lines.length-1;i>=0;i--) {
+              try { const e=JSON.parse(lines[i]); if (e.type==='result' && e.session_id) { console.log(e.session_id); return; } } catch {}
+            }
+          " 2>/dev/null || echo "")
+        fi
+
+        # Final fallback: any session directory under .ironbee/sessions/
+        if [ -z "$SESSION_ID" ]; then
+          SESSION_DIR=$(find .ironbee/sessions -maxdepth 1 -mindepth 1 -type d 2>/dev/null | head -1)
+          [ -n "$SESSION_DIR" ] && SESSION_ID=$(basename "$SESSION_DIR")
+        fi
+
+        echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+        echo "session_id=$SESSION_ID" >> "$GITHUB_OUTPUT"
+        echo "Verdict: $STATUS"
+        echo "Session: ${SESSION_ID:-<none>}"
+
+    - name: Collect session artifacts
+      id: collect
+      if: always() && steps.plan.outputs.mode == 'local'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        ARTIFACTS_DIR=".ironbee/artifacts"
+        HAS_ARTIFACTS=false
+
+        # Copy each session to artifacts whole: its verdicts and actions sit in
+        # its agents' directories
+        for session_dir in .ironbee/sessions/*/; do
+          if [ -d "$session_dir" ]; then
+            SESSION_ID=$(basename "$session_dir")
+            mkdir -p "$ARTIFACTS_DIR/sessions/$SESSION_ID"
+            cp -R "$session_dir". "$ARTIFACTS_DIR/sessions/$SESSION_ID/" 2>/dev/null || true
+            HAS_ARTIFACTS=true
+          fi
+        done
+
+        # Check for any cycle directories with evidence
+        if [ -n "$(find "$ARTIFACTS_DIR" -maxdepth 1 -name 'cycle-*' -type d 2>/dev/null)" ]; then
+          HAS_ARTIFACTS=true
+        fi
+
+        if [ "${{ steps.plan.outputs.verbose }}" = "true" ] && [ "$HAS_ARTIFACTS" = "true" ]; then
+          echo "::group::Collected artifacts"
+          find "$ARTIFACTS_DIR" -type f | sort
+          echo "::endgroup::"
+        fi
+
+        echo "has_artifacts=$HAS_ARTIFACTS" >> "$GITHUB_OUTPUT"
+
+    # The two uploads differ by entry point. GitHub Enterprise Server serves no
+    # v4 of upload-artifact, and github.com refuses v3 when it sets the job up,
+    # skipped steps included: action.yml names v4 and skips both on that server,
+    # and ghes/action.yml, generated from it by scripts/build-ghes-action.js,
+    # names v3.2.2 and runs them there alone. v3.2.2 answers no artifact
+    # address, so the report there has no download link.
+    - name: Upload verification evidence
+      id: upload-artifacts
+      if: always() && steps.plan.outputs.mode == 'local' && steps.collect.outputs.has_artifacts == 'true' && steps.github-host.outputs.flavor == 'ghes'
+      uses: actions/upload-artifact@v3.2.2
+      with:
+        name: ironbee-verification-evidence
+        path: ${{ inputs.working_directory }}/.ironbee/artifacts/
+        retention-days: 30
+
+    # ── The report ─────────────────────────────────────────────────────
+    #
+    # One body, two sources. A local run leaves artifacts behind and the report
+    # is assembled from them; a platform run leaves a job body. The builder
+    # shares the header, the badge and the footer between the two so a reader
+    # sees one product rather than two tools that comment on the same PR.
+    - name: Build the verification report
+      id: report
+      if: always() && steps.plan.outputs.mode != ''
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        # Through the environment: it is the service's text, not this file's.
+        FAILURE_MESSAGE: ${{ steps.job.outputs.failure_message }}
+      run: |
+        BODY_FILE="$(pwd)/.ironbee/report.md"
+        mkdir -p .ironbee
+
+        if [ "${{ steps.plan.outputs.mode }}" = "platform" ]; then
+          node "${{ github.action_path }}/../scripts/build-report.js" \
+            --job .ironbee/artifacts/job.json \
+            --version "${{ steps.install-cli.outputs.ironbee-version }}" \
+            --console "${{ steps.plan.outputs.console_url }}" \
+            --job-url "${{ steps.job-reverified.outputs.job_url || steps.job.outputs.job_url }}" \
+            --earlier-job-url "${{ steps.job-reverified.outputs.job_url && steps.job.outputs.job_url || '' }}" \
+            --failure-code "${{ steps.job.outputs.failure_code }}" \
+            --failure-message "$FAILURE_MESSAGE" \
+            ${{ steps.plan.outputs.fix_refused == 'true' && '--fix-off' || '' }} \
+            > "$BODY_FILE"
+        else
+          node "${{ github.action_path }}/../scripts/build-report.js" \
+            ".ironbee/artifacts" \
+            "${{ steps.install-cli.outputs.ironbee-version }}" \
+            "${{ steps.upload-artifacts.outputs.artifact-url }}" \
+            "${{ steps.plan.outputs.console_url }}" \
+            "${{ steps.verdict.outputs.session_id }}" \
+            ${{ steps.plan.outputs.fix_refused == 'true' && '--fix-off' || '' }} \
+            > "$BODY_FILE"
+        fi
+
+        echo "body_file=$BODY_FILE" >> "$GITHUB_OUTPUT"
+        cat "$BODY_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Post the report on the pull request
+      if: >-
+        always() && steps.report.outputs.body_file != '' &&
+        (github.event_name == 'pull_request' || github.event_name == 'issue_comment')
+      shell: bash
+      env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
+        BODY_FILE: ${{ steps.report.outputs.body_file }}
+        PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+        # The job the report was built from: the re-verified one when it ran.
+        PLATFORM_PUBLISHES: ${{ steps.job-reverified.outputs.platform_publishes || steps.job.outputs.platform_publishes }}
+        FIX_REFUSED: ${{ steps.plan.outputs.fix_refused }}
+      run: |
+        # The platform writes this run on the pull request itself (a check,
+        # inline comments, a summary), so a comment from here would be a second
+        # summary. An older report comment is not updated either.
+        if [ "$PLATFORM_PUBLISHES" = "true" ]; then
+          echo "::notice::the platform publishes this run on the pull request itself; the report stays in the step summary"
+          # The platform's publication says nothing of fixing, so a comment's
+          # --fix this workflow did not apply is answered in one line of its own.
+          if [ "$FIX_REFUSED" = "true" ]; then
+            node "${{ github.action_path }}/../scripts/build-report.js" --fix-off-note > .ironbee-fix-off.txt
+            gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+              -F "body=@.ironbee-fix-off.txt" >/dev/null \
+              || echo "::warning::could not post on the pull request that fixing is off in this workflow; the step summary says so"
+            rm -f .ironbee-fix-off.txt
+          fi
+          exit 0
+        fi
+
+        # Updated in place rather than appended to: a PR that is pushed to
+        # repeatedly would otherwise collect one comment per run.
+        EXISTING_COMMENT=$(gh api repos/${{ github.repository }}/issues/${PR_NUMBER}/comments \
+          --paginate --jq '.[] | select(.body | contains("IronBee Verification Report")) | .id' | head -1)
+
+        if [ -n "$EXISTING_COMMENT" ]; then
+          gh api repos/${{ github.repository }}/issues/comments/$EXISTING_COMMENT \
+            -X PATCH -F "body=@$BODY_FILE"
+        else
+          gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE"
+        fi
+
+    # ── Land the fixes ─────────────────────────────────────────────────
+    #
+    # On a pull request the fix belongs on the PR's own branch. This is the path
+    # that previously had no push step at all: the prompt asked the agent to
+    # commit, and whether the commit was ever pushed depended on the agent
+    # deciding to run `git push`.
+    #
+    # `actions/checkout` leaves a pull_request run on a detached merge commit
+    # that belongs to no branch, so the push names the head ref explicitly.
+    #
+    # A fix the re-verification rejected is not pushed, the same rule the fix PR
+    # follows and for a stronger reason: this branch belongs to whoever opened
+    # the pull request, and putting an unverified commit on it is more intrusive
+    # than opening a pull request they can ignore. Only `fail` blocks — an empty
+    # verdict means no re-verification ran and `unknown` means one ran without
+    # concluding, and neither is evidence against the fix.
+    - name: Commit the fixes to the pull request branch
+      if: >-
+        always() && steps.plan.outputs.mode != '' &&
+        (github.event_name == 'pull_request' || github.event_name == 'issue_comment') &&
+        steps.plan.outputs.can_fix == 'true' &&
+        (steps.platform-fix.outputs.fixed == 'true' || steps.claude-verify.outputs.fixed == 'true') &&
+        github.event.pull_request.head.repo.fork != true &&
+        steps.comment-pr.outputs.is_fork != 'true' &&
+        steps.job-reverified.outputs.verdict != 'fail' &&
+        steps.verdict.outputs.status != 'fail'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        HEAD_REF: ${{ github.event.pull_request.head.ref || steps.comment-pr.outputs.head_ref }}
+      run: |
+        # The paths the fix touched and nothing else: what an install or a build
+        # left in the tree is not a fix. The index is emptied first, so nothing
+        # the agent staged itself comes along.
+        git reset -q || true
+        node "${{ github.action_path }}/../scripts/fix-paths.js" stage .ironbee/fix-paths
+        # The IronBee setup was written before the snapshot, so it is never among
+        # those paths: a caller who keeps it in the commits has it staged here.
+        # A path the repository ignores is skipped, as a whole-tree add skips it.
+        if [ "${{ steps.plan.outputs.exclude_files }}" != "true" ]; then
+          for SETUP_PATH in .mcp.json .gitignore .claude; do
+            if [ -e "$SETUP_PATH" ] || [ -n "$(git ls-files -- "$SETUP_PATH")" ]; then
+              git add -A -- "$SETUP_PATH" 2>/dev/null || true
+            fi
+          done
+        fi
+        # Always unstaged: this action's own working files. The rest only when
+        # the caller asked for the IronBee setup to stay out of their commits.
+        git reset HEAD -- .ironbee/ 2>/dev/null || true
+        if [ "${{ steps.plan.outputs.exclude_files }}" = "true" ]; then
+          git reset HEAD -- .mcp.json .gitignore .claude/ 2>/dev/null || true
+        fi
+
+        if [ -z "$(git diff --cached --name-only)" ]; then
+          echo "No fixes to commit"
+          exit 0
+        fi
+
+        git commit -m "fix: apply IronBee verification fixes"
+
+        # A push that cannot land fails the job even when the verification
+        # passed, and deliberately: the fix exists only in this runner's
+        # filesystem, and a green build over a fix nobody received is worse than
+        # a red one that says why.
+        if ! git push origin "HEAD:refs/heads/${HEAD_REF}"; then
+          echo "::error::could not push the fixes to ${HEAD_REF} — the branch may have moved since this run checked it out"
+          exit 1
+        fi
+        echo "Pushed the fixes to ${HEAD_REF}"
+
+    # ── Fix PR for non-PR events ──────────────────────────────────────
+    # A fix the re-verification rejected opens nothing. The PR's whole claim is
+    # that it repairs what the run reported, and the one piece of evidence about
+    # that says otherwise — so opening it would put a claim in front of a
+    # reviewer that the run itself already contradicted.
+    #
+    # Only `fail` blocks. An empty verdict means no re-verification ran (a
+    # deployed URL serves what was deployed, so a second run there would verify
+    # the same bytes), and `unknown` means one ran without reaching a verdict —
+    # neither is evidence against the fix, and discarding it on either would
+    # throw away good work over a missing signal.
+    - name: Create fix PR
+      if: >-
+        always() && steps.plan.outputs.mode != '' &&
+        github.event_name != 'pull_request' && github.event_name != 'issue_comment' &&
+        steps.plan.outputs.can_fix == 'true' &&
+        (steps.platform-fix.outputs.fixed == 'true' || steps.claude-verify.outputs.fixed == 'true') &&
+        steps.job-reverified.outputs.verdict != 'fail' &&
+        steps.verdict.outputs.status != 'fail'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
+        BODY_FILE: ${{ steps.report.outputs.body_file }}
+        REF_NAME: ${{ github.ref_name }}
+      run: |
+        ORIGINAL_SHA="${{ github.sha }}"
+
+        # Nothing to open a PR for when neither the agent nor the fix round
+        # touched a file.
+        # `.ironbee` excluded for the same reason as in the fix step: this
+        # action's own working files are not the agent's changes.
+        if [ "$ORIGINAL_SHA" = "$(git rev-parse HEAD)" ] \
+           && [ -z "$(git status --porcelain -- ':(exclude).ironbee')" ]; then
+          echo "No changes detected — verification passed or issues require manual review"
+          exit 0
+        fi
+
+        SHORT_SHA=$(echo "$ORIGINAL_SHA" | cut -c1-7)
+        BRANCH="ironbee/fix-${SHORT_SHA}-${GITHUB_RUN_ID}"
+
+        # Only the paths the fix touched, and the IronBee setup when the caller
+        # keeps it, from an emptied index, as on a pull request.
+        git reset -q || true
+        node "${{ github.action_path }}/../scripts/fix-paths.js" stage .ironbee/fix-paths
+        if [ "${{ steps.plan.outputs.exclude_files }}" != "true" ]; then
+          for SETUP_PATH in .mcp.json .gitignore .claude; do
+            if [ -e "$SETUP_PATH" ] || [ -n "$(git ls-files -- "$SETUP_PATH")" ]; then
+              git add -A -- "$SETUP_PATH" 2>/dev/null || true
+            fi
+          done
+        fi
+        if [ "${{ steps.plan.outputs.exclude_files }}" = "true" ]; then
+          git reset HEAD -- .mcp.json .gitignore .claude/ 2>/dev/null || true
+        fi
+        git reset HEAD -- .ironbee/ 2>/dev/null || true
+        if [ -n "$(git diff --cached --name-only)" ]; then
+          git commit -m "fix: apply IronBee verification fixes for ${SHORT_SHA}"
+        fi
+
+        if [ "$ORIGINAL_SHA" = "$(git rev-parse HEAD)" ]; then
+          echo "No commits to push"
+          exit 0
+        fi
+
+        # Move the fix commits onto their own branch and put the checkout back
+        # where it started, so nothing here can be mistaken for a push to the
+        # branch the run was triggered on.
+        git branch "$BRANCH"
+        git reset --hard "$ORIGINAL_SHA"
+        git push origin "$BRANCH"
+
+        if [ -n "$BODY_FILE" ] && [ -f "$BODY_FILE" ]; then
+          gh pr create \
+            --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
+            --body-file "$BODY_FILE" \
+            --base "$REF_NAME" \
+            --head "$BRANCH"
+        else
+          gh pr create \
+            --title "fix: IronBee verification fixes for ${SHORT_SHA}" \
+            --body "IronBee applied these fixes. The verification report is not available for this run." \
+            --base "$REF_NAME" \
+            --head "$BRANCH"
+        fi
+
+    # ── Teardown ───────────────────────────────────────────────────────
+    #
+    # After everything that could still need the application: the fix round and
+    # the re-verification both run against it.
+    # Before the stop, not after: whatever holds the logs is usually the same
+    # thing the stop removes.
+    - name: Collect the application's own logs
+      if: always() && steps.plan.outputs.needs_app == 'true' && inputs.app_logs_command != ''
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      env:
+        APP_LOGS_COMMAND: ${{ inputs.app_logs_command }}
+      run: |
+        mkdir -p .ironbee/artifacts
+        bash -c "$APP_LOGS_COMMAND" > .ironbee/artifacts/app-service-logs.txt 2>&1 \
+          || echo "::warning::app_logs_command failed; the evidence carries no application logs"
+
+    - name: Stop the application
+      if: always() && steps.plan.outputs.needs_app == 'true'
+      shell: bash
+      working-directory: ${{ inputs.working_directory }}
+      run: |
+        # The whole process group, as the restart stops it.
+        if [ -f .ironbee/app.pid ]; then
+          kill -- "-$(cat .ironbee/app.pid)" 2>/dev/null || kill "$(cat .ironbee/app.pid)" 2>/dev/null || true
+          rm -f .ironbee/app.pid
+        fi
+
+    # Differs by entry point, as the evidence's upload does.
+    - name: Upload the application log
+      if: always() && steps.plan.outputs.needs_app == 'true' && steps.github-host.outputs.flavor == 'ghes'
+      uses: actions/upload-artifact@v3.2.2
+      with:
+        name: ironbee-application-log
+        path: |
+          ${{ inputs.working_directory }}/.ironbee/artifacts/app.log
+          ${{ inputs.working_directory }}/.ironbee/artifacts/app-service-logs.txt
+        if-no-files-found: ignore
+        retention-days: 30
+
+    # Replaces the "started" reaction with the outcome, so the comment carries
+    # the answer at a glance. Before the gate rather than after it: the gate is
+    # the step that fails the job, and anything below it would not run.
+    - name: React with the outcome
+      if: always() && github.event_name == 'issue_comment' && steps.command.outputs.ok == 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
+        VERDICT: ${{ steps.job-reverified.outputs.verdict || steps.job.outputs.verdict || steps.verdict.outputs.status }}
+        COMMENT_ID: ${{ github.event.comment.id }}
+      run: |
+        # A pass is the only +1. `not_applicable`, a missing verdict and an
+        # error all land on -1 for the same reason the gate treats them alike:
+        # "not a fail" is not the same as verified.
+        if [ "$VERDICT" = "pass" ]; then
+          CONTENT="+1"
+        else
+          CONTENT="-1"
+        fi
+        gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
+          -f content="$CONTENT" >/dev/null
+        # The eyes reaction said "running"; leaving it would say so forever.
+        EYES=$(gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
+          --jq '.[] | select(.content == "eyes") | .id' | head -1)
+        if [ -n "$EYES" ]; then
+          gh api -X DELETE \
+            "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions/$EYES" \
+            >/dev/null || true
+        fi
+
+    # ── The gate ───────────────────────────────────────────────────────
+    #
+    # The last step in the file, deliberately. The step that ran the
+    # verification could not fail the job — the report, the outputs and the
+    # teardown all had to run first — so the code it recorded is exited here,
+    # after all of them.
+    - name: Fail the job when the verification did
+      if: always() && steps.plan.outputs.mode != ''
+      shell: bash
+      env:
+        MODE: ${{ steps.plan.outputs.mode }}
+        PLATFORM_CODE: ${{ steps.platform-reverify.outputs.exit_code || steps.platform-verify.outputs.exit_code }}
+        PLATFORM_VERDICT: ${{ steps.job-reverified.outputs.verdict || steps.job.outputs.verdict }}
+        LOCAL_VERDICT: ${{ steps.verdict.outputs.status }}
+      run: |
+        node "${{ github.action_path }}/../scripts/gate.js"

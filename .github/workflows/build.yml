@@ -14,24 +14,29 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate action.yml
+      - name: Validate action.yml and ghes/action.yml
         run: |
-          # Check action.yml exists and is valid YAML
+          # Check both entry points exist and are valid YAML
           python3 -c "
           import yaml, sys
-          with open('action.yml') as f:
-              data = yaml.safe_load(f)
-          assert 'name' in data, 'Missing name'
-          assert 'inputs' in data, 'Missing inputs'
-          assert 'runs' in data, 'Missing runs'
-          assert data['runs']['using'] == 'composite', 'Not a composite action'
-          print('action.yml is valid')
+          for path in ('action.yml', 'ghes/action.yml'):
+              with open(path) as f:
+                  data = yaml.safe_load(f)
+              assert 'name' in data, path + ': Missing name'
+              assert 'inputs' in data, path + ': Missing inputs'
+              assert 'runs' in data, path + ': Missing runs'
+              assert data['runs']['using'] == 'composite', path + ': Not a composite action'
+              print(path + ' is valid')
           "
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      # ghes/action.yml is generated from action.yml, never edited by hand.
+      - name: Check ghes/action.yml is generated from action.yml
+        run: node scripts/build-ghes-action.js --check
 
       # The decision logic the action runs on. A broken module here would
       # otherwise fail in a customer's workflow rather than in ours.

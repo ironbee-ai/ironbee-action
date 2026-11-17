@@ -704,6 +704,126 @@ test('action.yml: the plan asks the API for the visibility the event left out', 
   assert.ok(body.indexOf('export REPOSITORY_PRIVATE') < body.indexOf('scripts/resolve-plan.js'));
 });
 
+// ─── The GitHub host ─────────────────────────────────────────────────────────
+//
+// A composite action shares no environment between its steps, so a `gh` step
+// that does not name the host calls github.com from a GHE.com tenant or a
+// GitHub Enterprise Server, with a token github.com does not take.
+
+/** Every step in order: its name, the text above its script, and its script. */
+function allSteps() {
+  const body = ACTION.slice(ACTION.indexOf('\n  steps:\n'));
+  return body.split('\n    - name: ').slice(1).map((chunk) => {
+    // The comments and blank lines below a step belong to the next one.
+    const lines = chunk.split('\n');
+    while (lines.length > 1 && (lines[lines.length - 1].trim() === '' || lines[lines.length - 1].trim().startsWith('#'))) {
+      lines.pop();
+    }
+    const text = lines.join('\n');
+    const run = text.search(/\n\s+run:/);
+    return {
+      name: lines[0],
+      header: run === -1 ? text : text.slice(0, run),
+      script: run === -1 ? '' : text.slice(run),
+    };
+  });
+}
+
+const STEPS = allSteps();
+
+/** Whether a script runs `gh` on a line that is not a comment. */
+function callsGh(script) {
+  return script.split('\n')
+    .filter((line) => !line.trim().startsWith('#'))
+    .some((line) => /(^|[\s;&|(!])gh\s/.test(line));
+}
+
+const GH_ENV = [
+  'GH_HOST: ${{ steps.github-host.outputs.host }}',
+  'GH_TOKEN: ${{ inputs.github_token }}',
+  'GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}',
+];
+
+// A floor, so a detector that broke cannot pass the test below by finding nothing.
+test('action.yml: the steps that call gh are found', () => {
+  assert.ok(STEPS.length > 30, `only ${String(STEPS.length)} steps found — the shape changed`);
+  const found = STEPS.filter((s) => callsGh(s.script)).map((s) => s.name);
+  for (const name of [
+    'Answer a malformed command',
+    'Acknowledge the command',
+    'Resolve the pull request behind the comment',
+    'Resolve the verification plan',
+    'Post the report on the pull request',
+    'Create fix PR',
+    'React with the outcome',
+  ]) {
+    assert.ok(found.includes(name), name);
+  }
+});
+
+test('action.yml: every step that calls gh names the host and hands the token as both variables', () => {
+  const missing = [];
+  for (const s of STEPS.filter((candidate) => callsGh(candidate.script))) {
+    const env = s.header.split('\n').map((line) => line.trim());
+    for (const line of GH_ENV) {
+      if (!env.includes(line)) {
+        missing.push(`${s.name}: ${line}`);
+      }
+    }
+  }
+  assert.deepEqual(missing, []);
+});
+
+test('action.yml: the host is read unconditionally, once Node is set up and before any gh step', () => {
+  const names = STEPS.map((s) => s.name);
+  const at = names.indexOf('Read the GitHub host');
+  assert.notEqual(at, -1);
+  const { header: hostHeader, script } = STEPS[at];
+  assert.match(hostHeader, /\n\s+id: github-host\n/);
+  assert.doesNotMatch(hostHeader, /\n\s+if:/);
+  assert.match(hostHeader, /\n\s+SERVER_URL: \$\{\{ github\.server_url \}\}$/);
+  assert.match(script, /run: node "\$\{\{ github\.action_path \}\}\/scripts\/github-host\.js"/);
+  assert.ok(names.indexOf('Setup Node.js') < at);
+  assert.ok(at < STEPS.findIndex((s) => callsGh(s.script)));
+  assert.equal(names.filter((name) => name === 'Read the GitHub host').length, 1);
+});
+
+// The plan's own rule: off github.com the repository counts as private.
+test('action.yml: the plan step hands the script the server URL', () => {
+  assert.match(header('Resolve the verification plan'), /\n\s+SERVER_URL: \$\{\{ github\.server_url \}\}\n/);
+});
+
+// github.com resolves every `uses:` when it sets the job up, skipped steps
+// included, and refuses v3 of the artifact actions: one v3 reference here fails
+// every run there before its first step. The server's v3.2.2 lives in
+// ghes/action.yml alone, and this file's v4 uploads are skipped on the server.
+test('action.yml: each artifact upload is on v4, skipped on GitHub Enterprise Server', () => {
+  const uploads = STEPS.filter((s) => /\n\s+uses: actions\/upload-artifact@/.test(s.header));
+  assert.deepEqual(uploads.map((s) => s.name), ['Upload verification evidence', 'Upload the application log']);
+  for (const s of uploads) {
+    assert.match(s.header, /\n\s+uses: actions\/upload-artifact@v4\n/, s.name);
+    assert.ok(s.header.match(/\n\s+if: (.*)\n/)[1].endsWith(" && steps.github-host.outputs.flavor != 'ghes'"), s.name);
+  }
+});
+
+test('action.yml: names no v3 action anywhere', () => {
+  const offending = ACTION.split('\n')
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) => /@v3\b/.test(line))
+    .map(({ line, index }) => `line ${String(index + 1)}: ${line.trim()}`);
+  assert.deepEqual(offending, []);
+});
+
+// The version GitHub Enterprise Server serves answers no address. Quoted, the
+// empty value keeps its place among the report's positional arguments, so the
+// console and the session still land where the builder reads them.
+test('action.yml: the local report takes the artifact address quoted, so none is an empty argument', () => {
+  assert.match(
+    step('Build the verification report'),
+    /\n\s+"\$\{\{ steps\.upload-artifacts\.outputs\.artifact-url \}\}" \\\n\s+"\$\{\{ steps\.plan\.outputs\.console_url \}\}" \\\n/,
+  );
+});
+
 // ─── Event text never becomes script ─────────────────────────────────────────
 
 /** Every step's `run:` script, block or single-line, with its starting line. */

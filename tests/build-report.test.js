@@ -263,6 +263,20 @@ test('fix off: the local report takes the flag after its positional arguments', 
   assert.equal(runReport([dir, '1.2.3']).includes('fixing is off'), false);
 });
 
+// GitHub Enterprise Server's artifact version answers no address: the report
+// carries no download link there, and every other part stays.
+test('local report: no artifact address, no download link', () => {
+  const dir = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'report-'));
+  const without = runReport([dir, '1.2.3', '', 'console.ironbee.dev', 'sess-1']);
+  assert.equal(without.includes('Download Verification Artifacts'), false);
+  assert.match(without, /https:\/\/console\.ironbee\.dev\/sessions\/sess-1/);
+  assert.match(without, /v1\.2\.3\*/);
+
+  const address = 'https://github.com/acme/shop/actions/runs/1/artifacts/2';
+  const withAddress = runReport([dir, '1.2.3', address, 'console.ironbee.dev', 'sess-1']);
+  assert.ok(withAddress.includes(`[Download Verification Artifacts](${address})`));
+});
+
 test('fix off: the platform command line reads the flag wherever it sits', () => {
   const report = runReport(['--job', '/nonexistent/job.json', '--fix-off', '--version', '1.2.3']);
   assert.match(report, /fixing is off in this workflow/);

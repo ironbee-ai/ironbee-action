@@ -25,14 +25,25 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Validate action.yml
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Every release carries both entry points: the release stops when the
+      # server's is not the one made from the action.yml being released.
+      - name: Check ghes/action.yml
+        run: node scripts/build-ghes-action.js --check
+
+      - name: Validate action.yml and ghes/action.yml
         run: |
           python3 -c "
           import yaml
-          with open('action.yml') as f:
-              data = yaml.safe_load(f)
-          assert data['runs']['using'] == 'composite'
-          print('action.yml is valid')
+          for path in ('action.yml', 'ghes/action.yml'):
+              with open(path) as f:
+                  data = yaml.safe_load(f)
+              assert data['runs']['using'] == 'composite', path
+              print(path + ' is valid')
           "
 
       - name: Compute next version

@@ -167,6 +167,74 @@ test('mode: an OAuth token counts as an Anthropic credential', () => {
   assert.equal(plan.mode, 'local');
 });
 
+// ─── Off github.com ──────────────────────────────────────────────────────────
+//
+// The platform reads a repository on a GHE.com tenant or a GitHub Enterprise
+// Server only through the App registered for that host, never by an anonymous
+// clone, so a repository there counts as private whatever its visibility.
+
+const ENTERPRISE_SERVERS = ['https://github.acme.com', 'https://acme.ghe.com'];
+
+test('mode: off github.com a public repository counts as private', () => {
+  for (const serverUrl of ENTERPRISE_SERVERS) {
+    const host = new URL(serverUrl).hostname;
+
+    const withCredential = resolvePlan(input({ serverUrl, repositoryPrivate: 'false', anthropicApiKey: 'sk-ant' }));
+    assert.equal(withCredential.mode, 'local', serverUrl);
+    assert.ok(withCredential.modeReason.includes(`on ${host}`), withCredential.modeReason);
+    assert.match(withCredential.modeReason, /only through the IronBee GitHub App/);
+    assert.match(withCredential.modeReason, /verification_mode: platform/);
+
+    const withoutCredential = resolvePlan(input({ serverUrl, repositoryPrivate: 'false' }));
+    assert.equal(withoutCredential.mode, 'platform', serverUrl);
+    assert.match(withoutCredential.modeReason, /only engine/);
+    assert.doesNotMatch(withoutCredential.modeReason, /public/);
+  }
+});
+
+// A scheduled run's event carries no repository, and a visibility read that
+// failed leaves the answer empty: off github.com that is no longer public.
+test('mode: off github.com an empty visibility is private', () => {
+  for (const serverUrl of ENTERPRISE_SERVERS) {
+    const plan = resolvePlan(input({ serverUrl, eventName: 'schedule', repositoryPrivate: '', anthropicApiKey: 'sk-ant' }));
+    assert.equal(plan.mode, 'local', serverUrl);
+  }
+});
+
+test('mode: off github.com an explicit choice still wins', () => {
+  for (const verificationMode of ['local', 'platform']) {
+    const plan = resolvePlan(input({ serverUrl: 'https://github.acme.com', verificationMode, anthropicApiKey: 'sk-ant' }));
+    assert.equal(plan.mode, verificationMode);
+  }
+});
+
+// github.com's answers are the ones given before any server URL was read.
+test('mode: on github.com the visibility decides, as it always did', () => {
+  for (const serverUrl of ['https://github.com', '', undefined]) {
+    const cases = [
+      [{ repositoryPrivate: 'false', anthropicApiKey: 'sk-ant' }, 'platform'],
+      [{ repositoryPrivate: '', eventName: 'schedule', anthropicApiKey: 'sk-ant' }, 'platform'],
+      [{ repositoryPrivate: 'true', anthropicApiKey: 'sk-ant' }, 'local'],
+      [{ repositoryPrivate: 'true' }, 'platform'],
+    ];
+    for (const [overrides, mode] of cases) {
+      const plan = resolvePlan(input({ serverUrl, ...overrides }));
+      const before = resolvePlan(input(overrides));
+      assert.equal(plan.mode, mode, `${String(serverUrl)} ${JSON.stringify(overrides)}`);
+      assert.equal(plan.modeReason, before.modeReason);
+    }
+  }
+  assert.equal(
+    resolvePlan(input({ serverUrl: 'https://github.com', repositoryPrivate: 'true', anthropicApiKey: 'sk-ant' })).modeReason,
+    'auto: the repository is private and an Anthropic credential is set — '
+      + 'set verification_mode: platform if the IronBee GitHub App covers this repository',
+  );
+  assert.equal(
+    resolvePlan(input({ serverUrl: 'https://github.com', repositoryPrivate: 'true' })).modeReason,
+    'auto: the repository is private and no Anthropic credential is set, so the platform is the only engine available',
+  );
+});
+
 // ─── Targets ─────────────────────────────────────────────────────────────────
 
 test('target: a routable app_url is verified directly', () => {

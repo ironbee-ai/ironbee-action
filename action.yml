@@ -321,6 +321,17 @@ runs:
       with:
         node-version: '20'
 
+    # A composite action shares no environment between its steps, so each step
+    # that calls `gh` sets GH_HOST from this output and hands the token as both
+    # GH_TOKEN and GH_ENTERPRISE_TOKEN: `gh` reads the first on github.com and
+    # *.ghe.com, the second on a GitHub Enterprise Server.
+    - name: Read the GitHub host
+      id: github-host
+      shell: bash
+      env:
+        SERVER_URL: ${{ github.server_url }}
+      run: node "${{ github.action_path }}/scripts/github-host.js"
+
     # ── The comment command ────────────────────────────────────────────
     #
     # WHO may run it is the workflow's decision, not this action's: an
@@ -353,7 +364,9 @@ runs:
       if: github.event_name == 'issue_comment' && steps.command.outputs.error != ''
       shell: bash
       env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
         GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
         ERROR: ${{ steps.command.outputs.error }}
         ISSUE_NUMBER: ${{ github.event.issue.number }}
       run: |
@@ -373,7 +386,9 @@ runs:
       continue-on-error: true
       shell: bash
       env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
         GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |
         gh api "repos/${{ github.repository }}/issues/comments/${COMMENT_ID}/reactions" \
@@ -392,7 +407,9 @@ runs:
       if: github.event_name == 'issue_comment' && github.event.issue.pull_request
       shell: bash
       env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
         GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
         ISSUE_NUMBER: ${{ github.event.issue.number }}
       run: |
         PR_JSON="$(gh api "repos/${{ github.repository }}/pulls/${ISSUE_NUMBER}")"
@@ -457,7 +474,12 @@ runs:
         INPUT_IRONBEE_EXTRA_CONFIG: ${{ inputs.ironbee_extra_config }}
         INPUT_VERBOSE: ${{ inputs.verbose }}
         REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+        # Off github.com the plan counts the repository as private, whatever the
+        # visibility read below answers.
+        SERVER_URL: ${{ github.server_url }}
+        GH_HOST: ${{ steps.github-host.outputs.host }}
         GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
         # The pull_request event carries the answer; a comment event does not,
         # so the step above reads it back and both arrive here as one flag.
         IS_FORK: ${{ github.event_name == 'issue_comment' && steps.comment-pr.outputs.is_fork || github.event.pull_request.head.repo.fork }}
@@ -1431,9 +1453,15 @@ runs:
 
         echo "has_artifacts=$HAS_ARTIFACTS" >> "$GITHUB_OUTPUT"
 
+    # The two uploads differ by entry point. GitHub Enterprise Server serves no
+    # v4 of upload-artifact, and github.com refuses v3 when it sets the job up,
+    # skipped steps included: action.yml names v4 and skips both on that server,
+    # and ghes/action.yml, generated from it by scripts/build-ghes-action.js,
+    # names v3.2.2 and runs them there alone. v3.2.2 answers no artifact
+    # address, so the report there has no download link.
     - name: Upload verification evidence
       id: upload-artifacts
-      if: always() && steps.plan.outputs.mode == 'local' && steps.collect.outputs.has_artifacts == 'true'
+      if: always() && steps.plan.outputs.mode == 'local' && steps.collect.outputs.has_artifacts == 'true' && steps.github-host.outputs.flavor != 'ghes'
       uses: actions/upload-artifact@v4
       with:
         name: ironbee-verification-evidence
@@ -1489,7 +1517,9 @@ runs:
         (github.event_name == 'pull_request' || github.event_name == 'issue_comment')
       shell: bash
       env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
         GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
         BODY_FILE: ${{ steps.report.outputs.body_file }}
         PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
         # The job the report was built from: the re-verified one when it ran.
@@ -1617,7 +1647,9 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working_directory }}
       env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
         GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
         BODY_FILE: ${{ steps.report.outputs.body_file }}
         REF_NAME: ${{ github.ref_name }}
       run: |
@@ -1709,8 +1741,9 @@ runs:
           rm -f .ironbee/app.pid
         fi
 
+    # Differs by entry point, as the evidence's upload does.
     - name: Upload the application log
-      if: always() && steps.plan.outputs.needs_app == 'true'
+      if: always() && steps.plan.outputs.needs_app == 'true' && steps.github-host.outputs.flavor != 'ghes'
       uses: actions/upload-artifact@v4
       with:
         name: ironbee-application-log
@@ -1728,7 +1761,9 @@ runs:
       continue-on-error: true
       shell: bash
       env:
+        GH_HOST: ${{ steps.github-host.outputs.host }}
         GH_TOKEN: ${{ inputs.github_token }}
+        GH_ENTERPRISE_TOKEN: ${{ inputs.github_token }}
         VERDICT: ${{ steps.job-reverified.outputs.verdict || steps.job.outputs.verdict || steps.verdict.outputs.status }}
         COMMENT_ID: ${{ github.event.comment.id }}
       run: |

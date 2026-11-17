@@ -29,6 +29,8 @@ The verification itself can run in one of two places. Everything after it — th
 - the repository is **private** and an Anthropic credential is set → **local**. A private repository needs the App, and whether it is installed is the one thing the action cannot check for free — so it uses the engine it knows can run. **If the App does cover your repository, set `verification_mode: platform`.**
 - the repository is **private** with no Anthropic credential → **platform**, because it is the only engine available. If the App is missing the run fails saying so — set `ironbee_bind_repository: false` to verify the application without a checkout instead.
 
+Off github.com (a GHE.com tenant, a GitHub Enterprise Server) the repository counts as private whatever its visibility: the platform reads it only through the App registered for its host. See [GitHub Enterprise](#github-enterprise).
+
 ## What a run does
 
 1. Resolve the plan — mode, target, changeset — and refuse anything that cannot work, before installing anything
@@ -254,6 +256,72 @@ A pull request from a **fork** receives no secrets, so neither verification mode
 can run there. The action detects it and says so rather than failing on an empty
 key.
 
+## GitHub Enterprise
+
+The action runs on a GHE.com tenant (`<name>.ghe.com`) and on a GitHub Enterprise
+Server as it does on github.com. Every `gh` call goes to the run's own host, with
+the workflow's token.
+
+- **The platform reads your repository through the IronBee GitHub App registered
+  for your host**, from the IronBee Console's GitHub Enterprise section (Enterprise
+  plan). The repository counts as private, so `auto` runs locally when an
+  Anthropic credential is set: set `verification_mode: platform` once the App
+  covers the repository.
+- **Under an IP allow list**, the host accepts the workflow's token only from
+  listed addresses: run on your own runners, or on larger runners with static
+  addresses, and list them.
+- **The IronBee CLI** is the latest release unless `ironbee_cli_version` pins one.
+  A pinned version must be one that serves enterprise hosts **(to be named at
+  release)**: an older CLI sends the repository as github.com's repository of the
+  same name.
+- **A server named by an IP address or by one label** gets no repository named:
+  set `ironbee_bind_repository: false` or `verification_mode: local`, or a
+  platform run stops, finding no repository to bind.
+
+**On GitHub Enterprise Server**, name the server's entry point:
+
+```yaml
+      - uses: ironbee-ai/ironbee-action/ghes@v1
+```
+
+It is the same action, with the same inputs and outputs, except for its artifact
+uploads: the server serves no v4 of `actions/upload-artifact`, and github.com
+refuses v3 even in a step it skips, so `ironbee-ai/ironbee-action@v1` names v4
+and skips its uploads on the server, and `ironbee-ai/ironbee-action/ghes@v1`
+names `v3.2.2` and uploads there. A workflow on the server that names
+`ironbee-ai/ironbee-action@v1` still runs, without the artifacts (the server
+must then still find `actions/upload-artifact@v4`, which that entry point names).
+
+- It has no hosted runners: `runs-on` names your own.
+- It looks for an action on the server first. A site admin makes these available
+  there, at these versions (`actions-sync` copies them with their tags; under
+  GitHub Connect, the server's own older copy of an action wins until it is
+  updated or removed):
+
+  | Action | Version |
+  |---|---|
+  | `ironbee-ai/ironbee-action` | the one your workflow names. The repository carries both entry points, so syncing it with `actions-sync` brings `ghes` along |
+  | `actions/setup-node` | `v4` |
+  | `actions/cache` | `v4` |
+  | `actions/upload-artifact` | `v3.2.2` |
+  | `actions/checkout`, in your workflow | `v4` |
+
+- A runner needs `gh`, `jq`, `git` and `curl`; GitHub Actions Runner 2.327.1 or
+  newer for the `ghes` entry point in every mode (the runner loads
+  `actions/upload-artifact@v3.2.2`, which runs on Node 24, when it sets up the
+  job, even where the upload is skipped); in local mode, root or password-less `sudo` for the browser's
+  system packages; and, when a private authority signed the server's
+  certificate, `NODE_EXTRA_CA_CERTS` naming it.
+- A runner reaches, on 443, the IronBee API and collector, the npm registry,
+  Anthropic's API whenever fixing is on or the mode is local, Playwright's browser
+  download in local mode, github.com for the Node download, and, in platform mode
+  with the application on the runner, the verification tunnel's endpoint the API
+  gives the run.
+- The server's entry point uploads the evidence and the application log with
+  `actions/upload-artifact@v3.2.2`. That version gives no address, so the report
+  has no download link and `artifacts_url` stays empty: find them among the
+  workflow run's artifacts.
+
 ## Give the job enough time
 
 The action prints the `timeout-minutes` its configuration needs, at the top of
@@ -467,7 +535,7 @@ nobody validates is a setting that silently did not apply.
 | `mode` | Where the verification ran: `platform` or `local` |
 | `job_id` | Verification job id — platform mode only |
 | `job_url` | IronBee Console link for the run — platform mode only, once the job has started |
-| `artifacts_url` | Download URL for verification evidence — **local mode only**. In platform mode the evidence is captured on the platform and lives in the Console; this output is empty |
+| `artifacts_url` | Download URL for verification evidence — **local mode only**. In platform mode the evidence is captured on the platform and lives in the Console; this output is empty. Empty on GitHub Enterprise Server too, where the artifact version gives no address |
 | `platform_publishes` | `true` when the platform publishes the run on the pull request itself, so the action posted no report comment; `false` otherwise, and always in local mode |
 
 ## How It Works
@@ -532,7 +600,7 @@ Screenshots and recordings are organized by verification cycle:
     recordings/verification.webm
 ```
 
-Evidence is uploaded as GitHub Actions artifacts (30-day retention) and linked in the PR comment.
+Evidence is uploaded as GitHub Actions artifacts (30-day retention) and linked in the PR comment. On GitHub Enterprise Server the report carries no link: see [GitHub Enterprise](#github-enterprise).
 
 ### Caching
 
