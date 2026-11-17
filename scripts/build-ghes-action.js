@@ -50,23 +50,25 @@ function stepAround(lines, at) {
   return { start, end };
 }
 
-/** Whether an expression has an `||` outside parentheses and string literals. */
+/**
+ * Whether an expression has an `||` outside parentheses and string literals.
+ * An Actions string is single-quoted, and a doubled quote inside it is an escaped one.
+ */
 function hasTopLevelOr(expression) {
   let depth = 0;
-  let quote = null;
+  let inString = false;
   for (let at = 0; at < expression.length; at += 1) {
     const char = expression[at];
-    if (quote !== null) {
-      if (char === quote) {
-        // A doubled single quote is an escaped one, inside the string.
-        if (quote === "'" && expression[at + 1] === "'") {
+    if (inString) {
+      if (char === "'") {
+        if (expression[at + 1] === "'") {
           at += 1;
         } else {
-          quote = null;
+          inString = false;
         }
       }
-    } else if (char === "'" || char === '"') {
-      quote = char;
+    } else if (char === "'") {
+      inString = true;
     } else if (char === '(') {
       depth += 1;
     } else if (char === ')') {

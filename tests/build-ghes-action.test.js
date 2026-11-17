@@ -201,7 +201,6 @@ test('generator: swaps an upload if: whose || sits inside parentheses or a strin
     '(failure() || always())',
     "always() && inputs.mode != 'x || y'",
     "always() && inputs.mode != 'it''s || y'",
-    "always() && inputs.mode != \"x || y\"",
   ];
   for (const condition of conditions) {
     const built = ghesAction(SMALL.replace("if: always() && steps.github-host.outputs.flavor != 'ghes'",
