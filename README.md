@@ -271,8 +271,8 @@ the workflow's token.
   listed addresses: run on your own runners, or on larger runners with static
   addresses, and list them.
 - **The IronBee CLI** is the latest release unless `ironbee_cli_version` pins one.
-  A pinned version must be one that serves enterprise hosts **(to be named at
-  release)**: an older CLI sends the repository as github.com's repository of the
+  A pinned version must be one that serves enterprise hosts, **0.54.0** or
+  later: an older CLI sends the repository as github.com's repository of the
   same name.
 - **A server named by an IP address or by one label** gets no repository named:
   set `ironbee_bind_repository: false` or `verification_mode: local`, or a
